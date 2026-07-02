@@ -119,13 +119,17 @@ async function main() {
   const { permissionMode, model, prompt, resume, thinking, maxCost, maxTurns } = parseArgs();
 
   // API key 从环境变量获取，不支持命令行传递（避免泄露到 shell history）
-  const resolvedApiKey = process.env.ANTHROPIC_API_KEY;
-  if (!resolvedApiKey) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
     printError(`API key is required. Set ANTHROPIC_API_KEY env var.`);
     process.exit(1);
   }
 
-  const agent = new Agent({ permissionMode, model, apiKey: resolvedApiKey, thinking, maxCost, maxTurns });
+  const agent = new Agent({
+    permissionMode, model, thinking, maxCostUsd: maxCost, maxTurns,
+    apiKey,
+    baseURL: process.env.ANTHROPIC_BASE_URL,
+  });
 
   if (resume) {
     const sessionId = getLatestSessionId();

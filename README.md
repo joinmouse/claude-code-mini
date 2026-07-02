@@ -10,7 +10,7 @@
 
 ---
 
-本项目用 **~3400 行 TypeScript** 复现了 Claude Code 的核心架构——Agent Loop、13 个工具（含并行执行 + 流式早期启动）、4 层上下文压缩、语义记忆召回、技能系统、多 Agent、MCP 集成。每一步都对照真实源码讲解"它怎么做的 → 我们怎么简化的"。
+本项目用 **~3800 行 TypeScript** 复现了 Claude Code 的核心架构——Agent Loop、13 个工具（含并行执行 + 流式早期启动）、4 层上下文压缩、语义记忆召回、技能系统、多 Agent、MCP 集成。每一步都对照真实源码讲解"它怎么做的 → 我们怎么简化的"。
 
 ## 📖 分步教程
 
@@ -120,6 +120,7 @@ src/
 | **CI/CD 配置** | 移除了 GitHub Actions 等自动化流水线配置 |
 | **Docker 部署** | 移除了 Dockerfile 和容器化相关配置 |
 | **贡献者/Star History** | 移除不适用于 Fork 的展示内容 |
+| **代码整洁度优化** | 抽取重复逻辑（文件 mtime 校验、天数计算等）、移除死代码与冗余中间变量，功能不变 |
 
 **保留完整**：13 章教程内容、所有源码（agent/tools/memory/mcp/skills/subagent/prompt/cli/ui/session）、测试套件、在线教程站点。
 
