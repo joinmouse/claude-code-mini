@@ -12,6 +12,8 @@
 
 本项目用 **~3800 行 TypeScript** 复现了 Claude Code 的核心架构——Agent Loop、13 个工具（含并行执行 + 流式早期启动）、4 层上下文压缩、语义记忆召回、技能系统、多 Agent、MCP 集成。每一步都对照真实源码讲解"它怎么做的 → 我们怎么简化的"。
 
+核心代码仅 **~800 行**（[agent.ts](src/agent.ts)），其余按模块拆分：[压缩管线](src/compression.ts)、[工具系统](src/tools.ts)、[记忆](src/memory.ts)、[MCP](src/mcp.ts)、[子Agent](src/subagent.ts)、[技能](src/skills.ts)、[CLI](src/cli.ts)、[提示词](src/prompt.ts)。
+
 ## 📖 分步教程
 
 13 章内容，从基础到进阶逐步构建一个可用的 Coding Agent：
@@ -93,7 +95,8 @@ npm start -- --max-turns 20  # 轮次限制
 
 ```
 src/
-├── agent.ts        # Agent 循环：流式、并行执行、4 层压缩、预算
+├── agent.ts        # Agent 循环：流式、并行执行、预算 (~800行)
+├── compression.ts  # 4层压缩管线：budget/snip/microcompact/auto-compact
 ├── tools.ts        # 13 工具 + mtime 防护 + 延迟加载
 ├── cli.ts          # CLI 入口：参数解析、REPL
 ├── memory.ts       # 记忆系统：语义召回 + 异步预取
@@ -104,6 +107,9 @@ src/
 ├── skills.ts       # 技能系统：inline/fork 双模式
 ├── session.ts      # 会话持久化
 ├── frontmatter.ts  # YAML frontmatter 解析
+├── models.ts       # 模型配置：上下文窗口/thinking/output
+├── retry.ts        # 指数退避重试
+└── types.ts        # 共享类型：PermissionMode, ToolDef
 ```
 
 ## 🔀 与原始版本的区别

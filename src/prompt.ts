@@ -216,15 +216,17 @@ export function buildSystemPrompt(): string {
     ? `\n\nThe following deferred tools are available via tool_search: ${deferredNames.join(", ")}. Use tool_search to fetch their full schemas when needed.`
     : "";
 
-  return SYSTEM_PROMPT_TEMPLATE
-    .split("{{cwd}}").join(process.cwd())
-    .split("{{date}}").join(date)
-    .split("{{platform}}").join(platform)
-    .split("{{shell}}").join(shell)
-    .split("{{git_context}}").join(gitContext)
-    .split("{{claude_md}}").join(claudeMd)
-    .split("{{memory}}").join(memorySection)
-    .split("{{skills}}").join(skillsSection)
-    .split("{{agents}}").join(agentSection)
-    .split("{{deferred_tools}}").join(deferredSection);
+  const replacements: Record<string, string> = {
+    "{{cwd}}": process.cwd(),
+    "{{date}}": date,
+    "{{platform}}": platform,
+    "{{shell}}": shell,
+    "{{git_context}}": gitContext,
+    "{{claude_md}}": claudeMd,
+    "{{memory}}": memorySection,
+    "{{skills}}": skillsSection,
+    "{{agents}}": agentSection,
+    "{{deferred_tools}}": deferredSection,
+  };
+  return SYSTEM_PROMPT_TEMPLATE.replace(/\{\{\w+\}\}/g, (m) => replacements[m] ?? m);
 }

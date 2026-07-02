@@ -3,27 +3,23 @@ import { execSync, execFileSync } from "child_process";
 import { glob } from "glob";
 import { dirname, join, basename, extname, resolve } from "path";
 import { homedir } from "os";
+import type Anthropic from "@anthropic-ai/sdk";
+
+export { type PermissionMode, type ToolDef } from "./types.js";
+import type { PermissionMode, ToolDef } from "./types.js";
 
 const isWin = process.platform === "win32";
 import { getMemoryDir, updateMemoryIndex } from "./memory.js";
-import type Anthropic from "@anthropic-ai/sdk";
 // Note: skill execution is handled in agent.ts (supports fork mode)
 
 // ─── Permission modes ──────────────────────────────────────
 // Mirrors Claude Code's 5 external permission modes.
-
-export type PermissionMode = "default" | "plan" | "acceptEdits" | "bypassPermissions" | "dontAsk";
 
 const READ_TOOLS = new Set(["read_file", "list_files", "grep_search", "web_fetch"]);
 const EDIT_TOOLS = new Set(["write_file", "edit_file"]);
 
 // Concurrency-safe tools can run in parallel (read-only, no side effects)
 export const CONCURRENCY_SAFE_TOOLS = new Set(["read_file", "list_files", "grep_search", "web_fetch"]);
-
-// Tool definition type for Claude API (with optional deferred flag)
-export type ToolDef = Anthropic.Tool & { deferred?: boolean };
-
-// ─── Tool definitions ───────────────────────────────────────
 
 export const toolDefinitions: ToolDef[] = [
   {

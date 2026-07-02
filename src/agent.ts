@@ -1,19 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
 import chalk from "chalk";
-import { toolDefinitions, executeTool, checkPermission, CONCURRENCY_SAFE_TOOLS, getActiveToolDefinitions, getDeferredToolNames, type ToolDef, type PermissionMode } from "./tools.js";
 import {
-  printAssistantText,
-  printToolCall,
-  printToolResult,
-  printConfirmation,
-  printDivider,
-  printCost,
-  printRetry,
-  printInfo,
-  printSubAgentStart,
-  printSubAgentEnd,
-  startSpinner,
-  stopSpinner,
+  toolDefinitions, executeTool, checkPermission, CONCURRENCY_SAFE_TOOLS,
+  getActiveToolDefinitions, getDeferredToolNames,
+} from "./tools.js";
+import type { ToolDef, PermissionMode } from "./types.js";
+import {
+  printAssistantText, printToolCall, printToolResult,
+  printConfirmation, printDivider, printCost, printRetry, printInfo,
+  printSubAgentStart, printSubAgentEnd, startSpinner, stopSpinner,
 } from "./ui.js";
 import { saveSession } from "./session.js";
 import { buildSystemPrompt } from "./prompt.js";
@@ -23,89 +18,16 @@ import {
   type MemoryPrefetch, type RelevantMemory, type SideQueryFn,
 } from "./memory.js";
 import { McpManager } from "./mcp.js";
+import { withRetry } from "./retry.js";
+import {
+  getContextWindow, modelSupportsThinking, modelSupportsAdaptiveThinking, getMaxOutputTokens,
+} from "./models.js";
+import { Compressor } from "./compression.js";
 import * as readline from "readline";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-
-// ─── Retry with exponential backoff ──────────────────────────
-
-function isRetryable(error: any): boolean {
-  const status = error?.status || error?.statusCode;
-  if ([429, 503, 529].includes(status)) return true;
-  if (error?.code === "ECONNRESET" || error?.code === "ETIMEDOUT") return true;
-  if (error?.message?.includes("overloaded")) return true;
-  return false;
-}
-
-async function withRetry<T>(
-  fn: (signal?: AbortSignal) => Promise<T>,
-  signal?: AbortSignal,
-  maxRetries = 3
-): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn(signal);
-    } catch (error: any) {
-      if (signal?.aborted) throw error;
-      if (attempt >= maxRetries || !isRetryable(error)) throw error;
-      const delay = Math.min(1000 * Math.pow(2, attempt), 30000) + Math.random() * 1000;
-      const reason = error?.status ? `HTTP ${error.status}` : error?.code || "network error";
-      printRetry(attempt + 1, maxRetries, reason);
-      await new Promise((r) => setTimeout(r, delay));
-    }
-  }
-}
-
-// ─── Model context windows ──────────────────────────────────
-
-const MODEL_CONTEXT: Record<string, number> = {
-  "claude-opus-4-6": 200000,
-  "claude-sonnet-4-6": 200000,
-  "claude-sonnet-4-20250514": 200000,
-  "claude-haiku-4-5-20251001": 200000,
-  "claude-opus-4-20250514": 200000,
-};
-
-function getContextWindow(model: string): number {
-  return MODEL_CONTEXT[model] || 200000;
-}
-
-// ─── Thinking support detection ─────────────────────────────
-// Mirrors Claude Code: adaptive for 4.6, enabled for older Claude 4, disabled for the rest.
-
-function modelSupportsThinking(model: string): boolean {
-  const m = model.toLowerCase();
-  // Claude 4+ models support thinking (not Claude 3.x)
-  if (m.includes("claude-3-") || m.includes("3-5-") || m.includes("3-7-")) return false;
-  if (m.includes("claude") && (m.includes("opus") || m.includes("sonnet") || m.includes("haiku"))) return true;
-  return false; // non-Claude models (GPT, etc.) — no thinking
-}
-
-function modelSupportsAdaptiveThinking(model: string): boolean {
-  const m = model.toLowerCase();
-  return m.includes("opus-4-6") || m.includes("sonnet-4-6");
-}
-
-// Max output tokens by model (mirrors Claude Code's context.ts)
-function getMaxOutputTokens(model: string): number {
-  const m = model.toLowerCase();
-  if (m.includes("opus-4-6")) return 64000;
-  if (m.includes("sonnet-4-6")) return 32000;
-  if (m.includes("opus-4") || m.includes("sonnet-4") || m.includes("haiku-4")) return 32000;
-  return 16384; // safe default for unknown models
-}
-
-
-// ─── Multi-tier compression constants ────────────────────────
-// Mirrors Claude Code's 4-layer compression: budget → snip → microcompact → auto-compact
-
-const SNIPPABLE_TOOLS = new Set(["read_file", "grep_search", "list_files", "run_shell"]);
-const SNIP_PLACEHOLDER = "[Content snipped - re-read if needed]";
-const SNIP_THRESHOLD = 0.60;
-const MICROCOMPACT_IDLE_MS = 5 * 60 * 1000; // 5 minutes
-const KEEP_RECENT_RESULTS = 3;
 
 // ─── Agent ───────────────────────────────────────────────────
 
@@ -186,6 +108,9 @@ export class Agent {
   // Separate message history
   private anthropicMessages: Anthropic.MessageParam[] = [];
 
+  // Compression pipeline (tiers 1-4)
+  private compressor: Compressor;
+
   constructor(options: AgentOptions = {}) {
     // Permission mode: explicit mode > yolo legacy > default
     this.permissionMode = options.permissionMode
@@ -213,6 +138,17 @@ export class Agent {
     this.anthropicClient = new Anthropic({
       apiKey: options.apiKey,
       ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+    });
+
+    // Compression pipeline
+    this.compressor = new Compressor({
+      messages: this.anthropicMessages,
+      effectiveWindow: this.effectiveWindow,
+      getInputTokens: () => this.lastInputTokenCount,
+      setInputTokens: (v) => { this.lastInputTokenCount = v; },
+      getLastApiCallTime: () => this.lastApiCallTime,
+      client: this.anthropicClient,
+      model: this.model,
     });
   }
 
@@ -381,7 +317,7 @@ export class Agent {
   }
 
   async compact() {
-    await this.compactConversation();
+    await this.compressor.checkAndCompact();
   }
 
   // ─── Session restore ───────────────────────────────────────
@@ -409,189 +345,6 @@ export class Agent {
       });
     } catch {}
   }
-
-  // ─── Autocompact ───────────────────────────────────────────
-
-  private async checkAndCompact(): Promise<void> {
-    if (this.lastInputTokenCount > this.effectiveWindow * 0.85) {
-      printInfo("Context window filling up, compacting conversation...");
-      await this.compactConversation();
-    }
-  }
-
-  private async compactConversation(): Promise<void> {
-    await this.compactAnthropic();
-    printInfo("Conversation compacted.");
-  }
-
-  private async compactAnthropic(): Promise<void> {
-    // Invariant: caller must ensure the last message is a plain user-text
-    // message (not a tool_result). We slice it off below; if it were a
-    // tool_result, the preceding assistant's tool_use would be orphaned and
-    // the API would reject the summarize call.
-    if (this.anthropicMessages.length < 4) return;
-    const lastUserMsg = this.anthropicMessages[this.anthropicMessages.length - 1];
-    const summaryReq: Anthropic.MessageParam[] = [
-      {
-        role: "user",
-        content:
-          "Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work.",
-      },
-    ];
-    const summaryResp = await this.anthropicClient.messages.create({
-      model: this.model,
-      max_tokens: 2048,
-      system: "You are a conversation summarizer. Be concise but preserve important details.",
-      messages: [
-        ...this.anthropicMessages.slice(0, -1),
-        ...summaryReq,
-      ],
-    });
-    const summaryText =
-      summaryResp.content[0]?.type === "text"
-        ? summaryResp.content[0].text
-        : "No summary available.";
-    this.anthropicMessages = [
-      { role: "user", content: `[Previous conversation summary]\n${summaryText}` },
-      { role: "assistant", content: "Understood. I have the context from our previous conversation. How can I continue helping?" },
-    ];
-    if (lastUserMsg.role === "user") this.anthropicMessages.push(lastUserMsg);
-    this.lastInputTokenCount = 0;
-  }
-
-  // ─── Multi-tier compression pipeline ──────────────────────
-  // Mirrors Claude Code's 4-layer: budget → snip → microcompact → auto-compact
-  // Tiers 1-3 are zero-API-cost, operating on the local message array.
-
-  private runCompressionPipeline(): void {
-    this.budgetToolResults();
-    this.snipStaleResults();
-    this.microcompact();
-  }
-
-  // Tier 1: Budget tool results — dynamically shrink large results as context fills
-  private budgetToolResults(): void {
-    const utilization = this.lastInputTokenCount / this.effectiveWindow;
-    if (utilization < 0.5) return;
-    const budget = utilization > 0.7 ? 15000 : 30000;
-
-    for (const msg of this.anthropicMessages) {
-      if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
-      for (let i = 0; i < msg.content.length; i++) {
-        const block = msg.content[i] as any;
-        if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > budget) {
-          const keepEach = Math.floor((budget - 80) / 2);
-          block.content = block.content.slice(0, keepEach) +
-            `\n\n[... budgeted: ${block.content.length - keepEach * 2} chars truncated ...]\n\n` +
-            block.content.slice(-keepEach);
-        }
-      }
-    }
-  }
-
-
-
-  // Tier 2: Snip stale results — replace old/duplicate tool results with placeholder
-  private snipStaleResults(): void {
-    const utilization = this.lastInputTokenCount / this.effectiveWindow;
-    if (utilization < SNIP_THRESHOLD) return;
-
-    // Pre-build tool_use lookup to avoid O(n²) findToolUseById per result
-    const toolUseMap = this.buildToolUseLookup();
-
-    // Collect all tool_result blocks with metadata
-    const results: { msgIdx: number; blockIdx: number; toolName: string; filePath?: string }[] = [];
-    for (let mi = 0; mi < this.anthropicMessages.length; mi++) {
-      const msg = this.anthropicMessages[mi];
-      if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
-      for (let bi = 0; bi < msg.content.length; bi++) {
-        const block = msg.content[bi] as any;
-        if (block.type === "tool_result" && typeof block.content === "string" && block.content !== SNIP_PLACEHOLDER) {
-          const toolInfo = toolUseMap.get(block.tool_use_id);
-          if (toolInfo && SNIPPABLE_TOOLS.has(toolInfo.name)) {
-            results.push({ msgIdx: mi, blockIdx: bi, toolName: toolInfo.name, filePath: toolInfo.input?.file_path });
-          }
-        }
-      }
-    }
-
-    if (results.length <= KEEP_RECENT_RESULTS) return;
-
-    // Strategy: snip duplicates and old results, keep recent N
-    const toSnip = new Set<number>();
-    const seenFiles = new Map<string, number[]>(); // filePath → indices
-
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      if (r.toolName === "read_file" && r.filePath) {
-        const existing = seenFiles.get(r.filePath) || [];
-        existing.push(i);
-        seenFiles.set(r.filePath, existing);
-      }
-    }
-
-    // Snip earlier reads of same file
-    for (const indices of seenFiles.values()) {
-      if (indices.length > 1) {
-        for (let j = 0; j < indices.length - 1; j++) toSnip.add(indices[j]);
-      }
-    }
-
-    // Snip oldest results beyond keep-recent threshold
-    const snipBefore = results.length - KEEP_RECENT_RESULTS;
-    for (let i = 0; i < snipBefore; i++) toSnip.add(i);
-
-    for (const idx of toSnip) {
-      const r = results[idx];
-      const block = (this.anthropicMessages[r.msgIdx].content as any[])[r.blockIdx];
-      block.content = SNIP_PLACEHOLDER;
-    }
-  }
-
-
-
-  // Tier 3: Microcompact — aggressively clear old results when prompt cache is cold
-  private microcompact(): void {
-    if (!this.lastApiCallTime || (Date.now() - this.lastApiCallTime) < MICROCOMPACT_IDLE_MS) return;
-
-    // Collect ALL tool_results across messages, clear all but recent N
-    const allResults: { msgIdx: number; blockIdx: number }[] = [];
-    for (let mi = 0; mi < this.anthropicMessages.length; mi++) {
-      const msg = this.anthropicMessages[mi];
-      if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
-      for (let bi = 0; bi < msg.content.length; bi++) {
-        const block = msg.content[bi] as any;
-        if (block.type === "tool_result" && typeof block.content === "string" &&
-            block.content !== SNIP_PLACEHOLDER && block.content !== "[Old result cleared]") {
-          allResults.push({ msgIdx: mi, blockIdx: bi });
-        }
-      }
-    }
-
-    const clearCount = allResults.length - KEEP_RECENT_RESULTS;
-    for (let i = 0; i < clearCount && i < allResults.length; i++) {
-      const r = allResults[i];
-      (this.anthropicMessages[r.msgIdx].content as any[])[r.blockIdx].content = "[Old result cleared]";
-    }
-  }
-
-
-
-  /** Build a tool_use_id → { name, input } lookup map in one pass. */
-  private buildToolUseLookup(): Map<string, { name: string; input: any }> {
-    const map = new Map<string, { name: string; input: any }>();
-    for (const msg of this.anthropicMessages) {
-      if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
-      for (const block of msg.content as any[]) {
-        if (block.type === "tool_use" && block.id) {
-          map.set(block.id, { name: block.name, input: block.input });
-        }
-      }
-    }
-    return map;
-  }
-
-  // ─── Execute tool (handles agent tool internally) ─────────
 
   // ─── Large result persistence ───────────────────────────────
   // When a tool result exceeds 30 KB, write it to disk and replace the
@@ -635,30 +388,10 @@ export class Agent {
     if (!result) return `Unknown skill: ${input.skill_name}`;
 
     if (result.context === "fork") {
-      // Fork mode: run in isolated sub-agent
       const tools = result.allowedTools
         ? this.tools.filter(t => result.allowedTools!.includes(t.name))
         : this.tools.filter(t => t.name !== "agent");
-
-      printSubAgentStart("skill-fork", input.skill_name);
-      const subAgent = new Agent({
-        model: this.model,
-        customSystemPrompt: result.prompt,
-        customTools: tools,
-        isSubAgent: true,
-        permissionMode: this.permissionMode === "plan" ? "plan" : "bypassPermissions",
-      });
-
-      try {
-        const subResult = await subAgent.runOnce(input.args || "Execute this skill task.");
-        this.totalInputTokens += subResult.tokens.input;
-        this.totalOutputTokens += subResult.tokens.output;
-        printSubAgentEnd("skill-fork", input.skill_name);
-        return subResult.text || "(Skill produced no output)";
-      } catch (e: any) {
-        printSubAgentEnd("skill-fork", input.skill_name);
-        return `Skill fork error: ${e.message}`;
-      }
+      return this.runForkAgent("skill-fork", input.skill_name, result.prompt, tools, input.args || "Execute this skill task.");
     }
 
     // Inline mode: return prompt for injection into conversation
@@ -774,25 +507,18 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
     this.lastInputTokenCount = 0;
   }
 
-  private async executeAgentTool(input: Record<string, any>): Promise<string> {
-    const type = (input.type || "general") as SubAgentType;
-    const description = input.description || "sub-agent task";
-    const prompt = input.prompt || "";
-
+  /** Shared fork sub-agent helper — used by executeAgentTool & executeSkillTool. */
+  private async runForkAgent(
+    type: string, description: string, systemPrompt: string, tools: ToolDef[], prompt: string,
+  ): Promise<string> {
     printSubAgentStart(type, description);
-
-    const config = getSubAgentConfig(type);
     const subAgent = new Agent({
-      model: this.model,
-      customSystemPrompt: config.systemPrompt,
-      customTools: config.tools,
+      model: this.model, customSystemPrompt: systemPrompt, customTools: tools,
       isSubAgent: true,
       permissionMode: this.permissionMode === "plan" ? "plan" : "bypassPermissions",
     });
-
     try {
       const result = await subAgent.runOnce(prompt);
-      // Add sub-agent token usage to parent
       this.totalInputTokens += result.tokens.input;
       this.totalOutputTokens += result.tokens.output;
       printSubAgentEnd(type, description);
@@ -803,6 +529,12 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
     }
   }
 
+  private async executeAgentTool(input: Record<string, any>): Promise<string> {
+    const type = (input.type || "general") as SubAgentType;
+    const config = getSubAgentConfig(type);
+    return this.runForkAgent(type, input.description || "sub-agent task", config.systemPrompt, config.tools, input.prompt || "");
+  }
+
   // ─── Anthropic backend ───────────────────────────────────────
 
   private async chatAnthropic(userMessage: string): Promise<void> {
@@ -810,7 +542,7 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
     // Auto-compact at turn boundary only — the last message is now plain
     // user text, so the slice in compactAnthropic won't sever a
     // tool_use ↔ tool_result pair from the previous turn's tool execution.
-    await this.checkAndCompact();
+    await this.compressor.checkAndCompact();
 
     // Start async memory prefetch (non-blocking, fires once per user turn)
     let memoryPrefetch: MemoryPrefetch | null = null;
@@ -827,7 +559,7 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
       if (this.abortController?.signal.aborted) break;
 
       // Run compression pipeline before API call (tiers 1-3 are zero-cost)
-      this.runCompressionPipeline();
+      this.compressor.runPipeline();
 
       // Consume memory prefetch if settled (non-blocking poll, zero-wait).
       // Checked every iteration so the model sees recalled memories ASAP.

@@ -6,7 +6,7 @@ import { printWelcome, printUserPrompt, printError, printInfo, printPlanForAppro
 import { loadSession, getLatestSessionId } from "./session.js";
 import { listMemories } from "./memory.js";
 import { discoverSkills, resolveSkillPrompt, getSkillByName, executeSkill } from "./skills.js";
-import type { PermissionMode } from "./tools.js";
+import type { PermissionMode } from "./types.js";
 
 interface ParsedArgs {
   permissionMode: PermissionMode;
