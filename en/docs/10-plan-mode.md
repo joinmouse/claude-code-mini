@@ -42,7 +42,6 @@ Key design insight: **Plan Mode isn't about "preventing the Agent from doing thi
 
 Plan Mode requires two tools, marked as `deferred` (lazy-loaded, see [Chapter 2](/en/docs/02-tools.md)):
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts — Plan Mode tool definitions
@@ -69,24 +68,6 @@ Plan Mode requires two tools, marked as `deferred` (lazy-loaded, see [Chapter 2]
   deferred: true,
 },
 ```
-#### **Python**
-```python
-# tools.py — Plan Mode tool definitions
-
-{
-    "name": "enter_plan_mode",
-    "description": "Enter plan mode to switch to a read-only planning phase. ...",
-    "input_schema": {"type": "object", "properties": {}},
-    "deferred": True,
-},
-{
-    "name": "exit_plan_mode",
-    "description": "Exit plan mode after you have finished writing your plan to the plan file. ...",
-    "input_schema": {"type": "object", "properties": {}},
-    "deferred": True,
-},
-```
-<!-- tabs:end -->
 
 Neither tool takes parameters -- entering and exiting are pure state transitions, and all data (plan file path, approval result) is managed internally by the Agent. They're marked `deferred` because most sessions don't need Plan Mode, and lazy loading avoids consuming prompt space.
 
@@ -94,7 +75,6 @@ Neither tool takes parameters -- entering and exiting are pure state transitions
 
 Plan Mode involves 4 state variables:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts — Plan Mode state
@@ -105,22 +85,11 @@ private planFilePath: string | null = null;            // Plan file path
 private baseSystemPrompt: string = "";                 // Base prompt without plan injection
 private contextCleared: boolean = false;               // Whether context was cleared during approval
 ```
-#### **Python**
-```python
-# agent.py — Plan Mode state
-
-self._pre_plan_mode: str | None = None      # Mode before entering
-self._plan_file_path: str | None = None     # Plan file path
-self._base_system_prompt: str = ""           # Base prompt
-self._context_cleared: bool = False          # Whether context was cleared
-```
-<!-- tabs:end -->
 
 `prePlanMode` is critical -- it remembers the permission mode before entering Plan Mode so it can be precisely restored on exit. If the user was in `acceptEdits` mode, exiting Plan Mode should return to `acceptEdits`, not `default`.
 
 The switching logic is a symmetric enter/exit:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts — togglePlanMode()
@@ -132,9 +101,6 @@ togglePlanMode(): string {
     this.prePlanMode = null;
     this.planFilePath = null;
     this.systemPrompt = this.baseSystemPrompt;
-    if (this.useOpenAI && this.openaiMessages.length > 0) {
-      (this.openaiMessages[0] as any).content = this.systemPrompt;
-    }
     printInfo(`Exited plan mode → ${this.permissionMode} mode`);
     return this.permissionMode;
   } else {
@@ -143,47 +109,18 @@ togglePlanMode(): string {
     this.permissionMode = "plan";
     this.planFilePath = this.generatePlanFilePath();
     this.systemPrompt = this.baseSystemPrompt + this.buildPlanModePrompt();
-    if (this.useOpenAI && this.openaiMessages.length > 0) {
-      (this.openaiMessages[0] as any).content = this.systemPrompt;
-    }
     printInfo(`Entered plan mode. Plan file: ${this.planFilePath}`);
     return "plan";
   }
 }
 ```
-#### **Python**
-```python
-# agent.py — toggle_plan_mode()
 
-def toggle_plan_mode(self) -> str:
-    if self.permission_mode == "plan":
-        self.permission_mode = self._pre_plan_mode or "default"
-        self._pre_plan_mode = None
-        self._plan_file_path = None
-        self._system_prompt = self._base_system_prompt
-        if self.use_openai and self._openai_messages:
-            self._openai_messages[0]["content"] = self._system_prompt
-        print_info(f"Exited plan mode → {self.permission_mode} mode")
-        return self.permission_mode
-    else:
-        self._pre_plan_mode = self.permission_mode
-        self.permission_mode = "plan"
-        self._plan_file_path = self._generate_plan_file_path()
-        self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt()
-        if self.use_openai and self._openai_messages:
-            self._openai_messages[0]["content"] = self._system_prompt
-        print_info(f"Entered plan mode. Plan file: {self._plan_file_path}")
-        return "plan"
-```
-<!-- tabs:end -->
-
-Note how the system prompt is updated: on entry, the plan prompt is appended after `baseSystemPrompt`; on exit, it's restored to `baseSystemPrompt`. For the OpenAI format, the first message in the message array (the system message) needs to be directly modified.
+Note how the system prompt is updated: on entry, the plan prompt is appended after `baseSystemPrompt`; on exit, it's restored to `baseSystemPrompt`.
 
 ### Plan File and System Prompt
 
 The plan file path is generated based on the session ID, ensuring each session has its own independent plan file:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts — Plan file generation
@@ -194,20 +131,9 @@ private generatePlanFilePath(): string {
   return join(dir, `plan-${this.sessionId}.md`);
 }
 ```
-#### **Python**
-```python
-# agent.py — Plan file generation
-
-def _generate_plan_file_path(self) -> str:
-    d = Path.home() / ".claude" / "plans"
-    d.mkdir(parents=True, exist_ok=True)
-    return str(d / f"plan-{self.session_id}.md")
-```
-<!-- tabs:end -->
 
 The plan system prompt injects strict read-only constraints and workflow guidance:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts — buildPlanModePrompt()
@@ -237,35 +163,6 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode.
 Do NOT ask the user to approve — exit_plan_mode handles that.`;
 }
 ```
-#### **Python**
-```python
-# agent.py — _build_plan_mode_prompt()
-
-def _build_plan_mode_prompt(self) -> str:
-    return f"""
-
-# Plan Mode Active
-
-Plan mode is active. You MUST NOT make any edits (except the plan file below),
-run non-readonly tools, or make any changes to the system.
-
-## Plan File: {self._plan_file_path}
-Write your plan incrementally to this file using write_file or edit_file.
-This is the ONLY file you are allowed to edit.
-
-## Workflow
-1. **Explore**: Read code to understand the task. Use read_file, list_files, grep_search.
-2. **Design**: Design your implementation approach.
-3. **Write Plan**: Write a structured plan to the plan file including:
-   - **Context**: Why this change is needed
-   - **Steps**: Implementation steps with critical file paths
-   - **Verification**: How to test the changes
-4. **Exit**: Call exit_plan_mode when your plan is ready for user review.
-
-IMPORTANT: When your plan is complete, you MUST call exit_plan_mode.
-Do NOT ask the user to approve — exit_plan_mode handles that."""
-```
-<!-- tabs:end -->
 
 This prompt accomplishes three things:
 1. **Constrains behavior**: Explicitly prohibits editing and shell access (dual safeguard with permission checks)
@@ -278,7 +175,6 @@ The last sentence "Do NOT ask the user to approve" is crucial -- without it, the
 
 Plan Mode's read-only constraint is enforced through `checkPermission()` (see [Chapter 6](/en/docs/06-permissions.md) for details):
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts — Plan Mode handling in checkPermission()
@@ -302,23 +198,6 @@ if (toolName === "enter_plan_mode" || toolName === "exit_plan_mode") {
   return { action: "allow" };
 }
 ```
-#### **Python**
-```python
-# tools.py — Plan Mode handling in check_permission()
-
-if mode == "plan":
-    if tool_name in EDIT_TOOLS:
-        file_path = inp.get("file_path") or inp.get("path")
-        if plan_file_path and file_path == plan_file_path:
-            return {"action": "allow"}
-        return {"action": "deny", "message": f"Blocked in plan mode: {tool_name}"}
-    if tool_name == "run_shell":
-        return {"action": "deny", "message": "Shell commands blocked in plan mode"}
-
-if tool_name in ("enter_plan_mode", "exit_plan_mode"):
-    return {"action": "allow"}
-```
-<!-- tabs:end -->
 
 There's an elegant design here: **the plan file path is passed as a parameter to `checkPermission()`**. When the Agent tries to write a file, the permission check compares the target path against the plan file path -- only an exact match is allowed through. This means the system prompt's instruction to "only write the plan file" isn't just a suggestion -- it's a code-enforced constraint.
 
@@ -330,7 +209,6 @@ Dual safeguard:
 
 `executePlanModeTool()` handles the execution of `enter_plan_mode` and `exit_plan_mode`:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts — executePlanModeTool()
@@ -344,9 +222,6 @@ private async executePlanModeTool(name: string): Promise<string> {
     this.permissionMode = "plan";
     this.planFilePath = this.generatePlanFilePath();
     this.systemPrompt = this.baseSystemPrompt + this.buildPlanModePrompt();
-    if (this.useOpenAI && this.openaiMessages.length > 0) {
-      (this.openaiMessages[0] as any).content = this.systemPrompt;
-    }
     printInfo("Entered plan mode (read-only). Plan file: " + this.planFilePath);
     return `Entered plan mode. You are now in read-only mode.\n\n` +
       `Your plan file: ${this.planFilePath}\n` +
@@ -418,92 +293,6 @@ private async executePlanModeTool(name: string): Promise<string> {
   return `Unknown plan mode tool: ${name}`;
 }
 ```
-#### **Python**
-```python
-# agent.py — _execute_plan_mode_tool()
-
-async def _execute_plan_mode_tool(self, name: str) -> str:
-    if name == "enter_plan_mode":
-        if self.permission_mode == "plan":
-            return "Already in plan mode."
-        self._pre_plan_mode = self.permission_mode
-        self.permission_mode = "plan"
-        self._plan_file_path = self._generate_plan_file_path()
-        self._system_prompt = self._base_system_prompt + self._build_plan_mode_prompt()
-        if self.use_openai and self._openai_messages:
-            self._openai_messages[0]["content"] = self._system_prompt
-        print_info("Entered plan mode (read-only). Plan file: " + self._plan_file_path)
-        return (
-            f"Entered plan mode. You are now in read-only mode.\n\n"
-            f"Your plan file: {self._plan_file_path}\n"
-            f"Write your plan to this file. This is the only file you can edit.\n\n"
-            f"When your plan is complete, call exit_plan_mode."
-        )
-
-    if name == "exit_plan_mode":
-        if self.permission_mode != "plan":
-            return "Not in plan mode."
-        plan_content = "(No plan file found)"
-        if self._plan_file_path and Path(self._plan_file_path).exists():
-            plan_content = Path(self._plan_file_path).read_text()
-
-        if self._plan_approval_fn:
-            result = await self._plan_approval_fn(plan_content)
-            choice = result.get("choice", "manual-execute")
-
-            if choice == "keep-planning":
-                feedback = result.get("feedback") or "Please revise the plan."
-                return (
-                    f"User rejected the plan and wants to keep planning.\n\n"
-                    f"User feedback: {feedback}\n\n"
-                    f"Please revise your plan based on this feedback. "
-                    f"When done, call exit_plan_mode again."
-                )
-
-            if choice in ("clear-and-execute", "execute"):
-                target_mode = "acceptEdits"
-            else:
-                target_mode = self._pre_plan_mode or "default"
-
-            self.permission_mode = target_mode
-            self._pre_plan_mode = None
-            saved_plan_path = self._plan_file_path
-            self._plan_file_path = None
-            self._system_prompt = self._base_system_prompt
-
-            if choice == "clear-and-execute":
-                self._clear_history_keep_system()
-                self._context_cleared = True
-                print_info(f"Plan approved. Context cleared, executing in {target_mode} mode.")
-                return (
-                    f"User approved the plan. Context was cleared. "
-                    f"Permission mode: {target_mode}\n\n"
-                    f"Plan file: {saved_plan_path}\n\n"
-                    f"## Approved Plan:\n{plan_content}\n\n"
-                    f"Proceed with implementation."
-                )
-
-            print_info(f"Plan approved. Executing in {target_mode} mode.")
-            return (
-                f"User approved the plan. Permission mode: {target_mode}\n\n"
-                f"## Approved Plan:\n{plan_content}\n\n"
-                f"Proceed with implementation."
-            )
-
-        # Fallback: no approval function
-        self.permission_mode = self._pre_plan_mode or "default"
-        self._pre_plan_mode = None
-        self._plan_file_path = None
-        self._system_prompt = self._base_system_prompt
-        print_info("Exited plan mode. Restored to " + self.permission_mode + " mode.")
-        return (
-            f"Exited plan mode. Permission mode restored to: {self.permission_mode}\n\n"
-            f"## Your Plan:\n{plan_content}"
-        )
-
-    return f"Unknown plan mode tool: {name}"
-```
-<!-- tabs:end -->
 
 The core logic has three layers:
 
@@ -521,7 +310,6 @@ The core logic has three layers:
 
 Approval is injected via a callback function, decoupling the Agent from the UI layer:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // cli.ts — Setting up the approval callback
@@ -554,30 +342,6 @@ agent.setPlanApprovalFn((planContent: string) => {
   });
 });
 ```
-#### **Python**
-```python
-# __main__.py — Setting up the approval callback
-
-async def plan_approval(plan_content: str) -> dict:
-    print_plan_for_approval(plan_content)
-    print_plan_approval_options()
-    while True:
-        choice = input("  Enter choice (1-4): ").strip()
-        if choice == "1":
-            return {"choice": "clear-and-execute"}
-        elif choice == "2":
-            return {"choice": "execute"}
-        elif choice == "3":
-            return {"choice": "manual-execute"}
-        elif choice == "4":
-            feedback = input("  Feedback (what to change): ").strip()
-            return {"choice": "keep-planning", "feedback": feedback or None}
-        else:
-            print("  Invalid choice. Enter 1, 2, 3, or 4.")
-
-agent.set_plan_approval_fn(plan_approval)
-```
-<!-- tabs:end -->
 
 The UI portion displays the plan content and 4 options:
 
@@ -620,7 +384,6 @@ The four options are designed for different use cases:
 
 Plan Mode has three entry points:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // cli.ts — CLI arguments
@@ -638,22 +401,6 @@ if (input === "/plan") {
 
 // 3. Agent autonomously calls enter_plan_mode tool (lazy-loaded via ToolSearch)
 ```
-#### **Python**
-```python
-# __main__.py — CLI arguments
-
-# 1. Command-line argument --plan
-elif arg == "--plan":
-    permission_mode = "plan"
-
-# 2. REPL command /plan
-if user_input == "/plan":
-    agent.toggle_plan_mode()
-    continue
-
-# 3. Agent autonomously calls enter_plan_mode tool
-```
-<!-- tabs:end -->
 
 The difference between the three entry points:
 - `--plan`: Enter Plan Mode at startup; the entire session starts with planning

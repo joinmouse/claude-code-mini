@@ -73,7 +73,6 @@ flowchart LR
     Map --> Cache["cachedSkills[]"]
 ```
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // skills.ts — discoverSkills
@@ -92,33 +91,11 @@ export function discoverSkills(): SkillDefinition[] {
   return cachedSkills;
 }
 ```
-#### **Python**
-```python
-# skills.py — discover_skills
-
-_cached_skills: list[SkillDefinition] | None = None
-
-
-def discover_skills() -> list[SkillDefinition]:
-    global _cached_skills
-    if _cached_skills is not None:
-        return _cached_skills
-
-    skills: dict[str, SkillDefinition] = {}
-
-    _load_skills_from_dir(Path.home() / ".claude" / "skills", "user", skills)
-    _load_skills_from_dir(Path.cwd() / ".claude" / "skills", "project", skills)
-
-    _cached_skills = list(skills.values())
-    return _cached_skills
-```
-<!-- tabs:end -->
 
 用 Map 去重自然实现"项目级覆盖用户级"——先加载 user，再加载 project，同名 key 被后者覆盖。Claude Code 有 6 个来源是因为要支持企业和 MCP 场景，project + user 覆盖了个人开发者的核心需求。
 
 ### 技能解析
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // skills.ts — parseSkillFile
@@ -152,50 +129,11 @@ function parseSkillFile(
   };
 }
 ```
-#### **Python**
-```python
-# skills.py — _parse_skill_file
-
-def _parse_skill_file(
-    file_path: Path, source: str, skill_dir: str
-) -> SkillDefinition | None:
-    try:
-        raw = file_path.read_text()
-        result = parse_frontmatter(raw)
-        meta = result.meta
-
-        name = meta.get("name") or file_path.parent.name or "unknown"
-        user_invocable = meta.get("user-invocable", "true") != "false"
-        context = "fork" if meta.get("context") == "fork" else "inline"
-
-        allowed_tools: list[str] | None = None
-        if "allowed-tools" in meta:
-            raw_tools = meta["allowed-tools"]
-            if raw_tools.startswith("["):
-                try:
-                    allowed_tools = json.loads(raw_tools)
-                except Exception:
-                    allowed_tools = [s.strip() for s in raw_tools.strip("[]").split(",")]
-            else:
-                allowed_tools = [s.strip() for s in raw_tools.split(",")]
-
-        return SkillDefinition(
-            name=name, description=meta.get("description", ""),
-            when_to_use=meta.get("when_to_use") or meta.get("when-to-use"),
-            allowed_tools=allowed_tools, user_invocable=user_invocable,
-            context=context, prompt_template=result.body,
-            source=source, skill_dir=skill_dir,
-        )
-    except Exception:
-        return None
-```
-<!-- tabs:end -->
 
 `allowed-tools` 同时支持逗号分隔和 JSON 数组两种写法，先尝试 JSON.parse，失败就按逗号拆——用户写 YAML 时两种格式都很自然，容错解析避免因格式问题导致技能加载失败。`when_to_use` 同时兼容下划线和连字符两种 key 名，同理。
 
 ### Prompt 模板替换
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // skills.ts — resolveSkillPrompt
@@ -207,17 +145,6 @@ export function resolveSkillPrompt(skill: SkillDefinition, args: string): string
   return prompt;
 }
 ```
-#### **Python**
-```python
-# skills.py — resolve_skill_prompt
-
-def resolve_skill_prompt(skill: SkillDefinition, args: str) -> str:
-    prompt = skill.prompt_template
-    prompt = re.sub(r"\$ARGUMENTS|\$\{ARGUMENTS\}", args, prompt)
-    prompt = prompt.replace("${CLAUDE_SKILL_DIR}", skill.skill_dir)
-    return prompt
-```
-<!-- tabs:end -->
 
 `$ARGUMENTS` 替换用户传入的参数，`${CLAUDE_SKILL_DIR}` 替换技能目录路径（技能可以在目录里放模板文件，在 prompt 中用 `read_file` 引用）。Claude Code 还支持 `` !`shell_command` `` 内联执行，我们没有实现——它增加了安全风险，教程场景不需要。
 
@@ -242,7 +169,6 @@ flowchart TD
 
 **路径 1：用户手动调用**（cli.ts）
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 if (input.startsWith("/")) {
@@ -258,24 +184,9 @@ if (input.startsWith("/")) {
   }
 }
 ```
-#### **Python**
-```python
-if inp.startswith("/"):
-    space_idx = inp.find(" ")
-    cmd_name = inp[1:space_idx] if space_idx > 0 else inp[1:]
-    cmd_args = inp[space_idx + 1:] if space_idx > 0 else ""
-    skill = get_skill_by_name(cmd_name)
-    if skill and skill.user_invocable:
-        resolved = resolve_skill_prompt(skill, cmd_args)
-        print_info(f"Invoking skill: {skill.name}")
-        await agent.chat(resolved)
-        continue
-```
-<!-- tabs:end -->
 
 **路径 2：模型程序化调用**（tools.ts）
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts — skill 工具定义与执行
@@ -298,36 +209,11 @@ function runSkillTool(input: { skill_name: string; args?: string }): string {
   return `[Skill "${input.skill_name}" activated]\n\n${result.prompt}`;
 }
 ```
-#### **Python**
-```python
-# tools.py — skill 工具定义与执行
-
-{
-    "name": "skill",
-    "description": "Invoke a registered skill by name...",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "skill_name": {"type": "string"},
-            "args": {"type": "string"},
-        },
-        "required": ["skill_name"],
-    },
-}
-
-async def _execute_skill_tool(self, inp: dict) -> str:
-    result = execute_skill(inp.get("skill_name", ""), inp.get("args", ""))
-    if not result:
-        return f"Unknown skill: {inp.get('skill_name', '')}"
-    return f'[Skill "{inp.get("skill_name", "")}" activated]\n\n{result["prompt"]}'
-```
-<!-- tabs:end -->
 
 模型调用 `skill` 工具后得到的是展开后的 prompt 文本，在接下来的回合中按这个 prompt 执行任务。本质上是**元工具**——工具的返回值不是数据，而是指令。
 
 ### 执行模式：inline vs fork
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts — executeSkillTool
@@ -353,40 +239,11 @@ private async executeSkillTool(input: Record<string, any>): Promise<string> {
   return `[Skill "${input.skill_name}" activated]\n\n${result.prompt}`;
 }
 ```
-#### **Python**
-```python
-# agent.py — _execute_skill_tool
-
-async def _execute_skill_tool(self, inp: dict) -> str:
-    result = execute_skill(inp.get("skill_name", ""), inp.get("args", ""))
-    if not result:
-        return f"Unknown skill: {inp.get('skill_name', '')}"
-
-    if result["context"] == "fork":
-        tools = (
-            [t for t in self.tools if t["name"] in result["allowed_tools"]]
-            if result.get("allowed_tools")
-            else [t for t in self.tools if t["name"] != "agent"]
-        )
-        sub_agent = Agent(
-            model=self.model,
-            custom_system_prompt=result["prompt"],
-            custom_tools=tools,
-            is_sub_agent=True,
-            permission_mode="bypassPermissions",
-        )
-        sub_result = await sub_agent.run_once(inp.get("args") or "Execute this skill task.")
-        return sub_result["text"] or "(Skill produced no output)"
-
-    return f'[Skill "{inp.get("skill_name", "")}" activated]\n\n{result["prompt"]}'
-```
-<!-- tabs:end -->
 
 fork 时子 Agent 工具受 `allowedTools` 白名单约束，没指定则排除 `agent` 工具防止递归。技能需要多轮工具调用（如代码审查读多个文件）时选 fork，保持主对话干净。
 
 ### System Prompt 描述
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // skills.ts — buildSkillDescriptions
@@ -419,39 +276,6 @@ export function buildSkillDescriptions(): string {
   return lines.join("\n");
 }
 ```
-#### **Python**
-```python
-# skills.py — build_skill_descriptions
-
-def build_skill_descriptions() -> str:
-    skills = discover_skills()
-    if not skills:
-        return ""
-
-    lines = ["# Available Skills", ""]
-    invocable = [s for s in skills if s.user_invocable]
-    auto_only = [s for s in skills if not s.user_invocable]
-
-    if invocable:
-        lines.append("User-invocable skills (user types /<name> to invoke):")
-        for s in invocable:
-            lines.append(f"- **/{s.name}**: {s.description}")
-            if s.when_to_use:
-                lines.append(f"  When to use: {s.when_to_use}")
-        lines.append("")
-
-    if auto_only:
-        lines.append("Auto-invocable skills (use the skill tool when appropriate):")
-        for s in auto_only:
-            lines.append(f"- **{s.name}**: {s.description}")
-            if s.when_to_use:
-                lines.append(f"  When to use: {s.when_to_use}")
-        lines.append("")
-
-    lines.append("To invoke a skill programmatically, use the `skill` tool.")
-    return "\n".join(lines)
-```
-<!-- tabs:end -->
 
 技能分两组展示：用户可调用的加 `/` 前缀，仅模型可调用的不加。`whenToUse` 是给模型看的判断条件，决定是否主动触发。Claude Code 还做了 token 预算控制（`formatCommandsWithinBudget()`），我们跳过——教程场景技能数量有限。
 

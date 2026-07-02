@@ -7,7 +7,7 @@
 | **Agent Loop** | 7 continue reasons | Only checks tool_use | Simplified loop control |
 | **Tool count** | 66+ tools | 13 tools (6 core + web_fetch + tool_search + skill + agent + 2 plan mode) | Removed specialized tools |
 | **Tool execution** | Concurrent execution + streaming early start | Parallel execution + streaming early start | Architecture aligned |
-| **API backend** | Anthropic only | Anthropic + OpenAI compatible | Added OpenAI |
+| **API backend** | Anthropic only | Anthropic | Aligned |
 | **System Prompt** | static/dynamic split + API caching | No cache optimization | Removed caching |
 | **Permission system** | 7 layers + AST analysis + 8-level rule sources | 5 modes + rule config + regex + confirmation | Layer alignment |
 | **Context management** | 4-level compression pipeline | 4 layers (budget + snip + microcompact + summary) | Architecture aligned |
@@ -20,18 +20,18 @@
 
 ## File Mapping Table
 
-| mini-claude (TypeScript) | mini-claude (Python) | Claude Code Source | Description |
-|------------|------------|-------------------|-------------|
-| `src/agent.ts` | `python/mini_claude/agent.py` | `src/query.ts` + `src/QueryEngine.ts` | Agent loop + session management |
-| `src/tools.ts` | `python/mini_claude/tools.py` | `src/Tool.ts` + `src/tools/` (66 directories) | Tool definitions and execution |
-| `src/prompt.ts` | `python/mini_claude/prompt.py` | `src/constants/prompts.ts` + `src/utils/claudemd.ts` | Prompt construction |
-| `src/cli.ts` | `python/mini_claude/__main__.py` | `src/entrypoints/cli.tsx` + `src/commands/` | Entry point and commands |
-| `src/ui.ts` | `python/mini_claude/ui.py` | `src/components/` (React/Ink components) | UI rendering |
-| `src/session.ts` | `python/mini_claude/session.py` | `src/utils/sessionStorage.ts` + `src/history.ts` | Session persistence |
-| `src/memory.ts` | `python/mini_claude/memory.py` | `src/utils/memory.ts` + system prompt injection | Memory system |
-| `src/skills.ts` | `python/mini_claude/skills.py` | `src/utils/skills.ts` + `src/tools/SkillTool/` | Skills system |
-| `src/subagent.ts` | `python/mini_claude/subagent.py` | `src/tools/AgentTool/` (built-in types) | Sub-agent type configuration |
-| `src/mcp.ts` | `python/mini_claude/mcp.py` | `src/services/mcpClient.ts` | MCP client |
+| mini-claude (TypeScript) | Claude Code Source | Description |
+|------------|-------------------|-------------|
+| `src/agent.ts` | `src/query.ts` + `src/QueryEngine.ts` | Agent loop + session management |
+| `src/tools.ts` | `src/Tool.ts` + `src/tools/` (66 directories) | Tool definitions and execution |
+| `src/prompt.ts` | `src/constants/prompts.ts` + `src/utils/claudemd.ts` | Prompt construction |
+| `src/cli.ts` | `src/entrypoints/cli.tsx` + `src/commands/` | Entry point and commands |
+| `src/ui.ts` | `src/components/` (React/Ink components) | UI rendering |
+| `src/session.ts` | `src/utils/sessionStorage.ts` + `src/history.ts` | Session persistence |
+| `src/memory.ts` | `src/utils/memory.ts` + system prompt injection | Memory system |
+| `src/skills.ts` | `src/utils/skills.ts` + `src/tools/SkillTool/` | Skills system |
+| `src/subagent.ts` | `src/tools/AgentTool/` (built-in types) | Sub-agent type configuration |
+| `src/mcp.ts` | `src/services/mcpClient.ts` | MCP client |
 
 ## What We Didn't Implement
 
@@ -51,7 +51,7 @@ Why we didn't implement them: The core challenge is task decomposition accuracy 
 
 LSP gives the agent millisecond-level type error feedback after editing files, without waiting for a full compile/test cycle. In large projects, this can reduce the number of iterations needed to fix a bug by 30-50%.
 
-Why we didn't implement it: Requires managing LSP server processes, implementing the client protocol (initialization handshake, capability negotiation, incremental sync) -- 1000+ lines and depends on deep understanding of the LSP protocol. Getting error feedback through shell commands (`tsc --noEmit`, `python -m py_compile`) is sufficient for tutorial scenarios.
+Why we didn't implement it: Requires managing LSP server processes, implementing the client protocol (initialization handshake, capability negotiation, incremental sync) -- 1000+ lines and depends on deep understanding of the LSP protocol. Getting error feedback through shell commands (`tsc --noEmit`) is sufficient for tutorial scenarios.
 
 ### Prompt Caching
 
@@ -82,7 +82,7 @@ Why we didn't implement it: tree-sitter is a native C/C++ library requiring a `n
 | Hook system | Customizing agent behavior requires modifying source code | ~300 lines |
 | Tool type system | switch/case doesn't scale to 20+ tools | ~200 lines |
 
-The core transition is **from hardcoded to plugin-based**. The current switch/case works fine at 10 tools, but beyond 20 you need to introduce a Tool interface (or Python's Protocol/ABC), making each tool an independent module.
+The core transition is **from hardcoded to plugin-based**. The current switch/case works fine at 10 tools, but beyond 20 you need to introduce a Tool interface, making each tool an independent module.
 
 ### Phase 3: Reliability and Security (1-2 weeks)
 
@@ -194,9 +194,9 @@ Want to dive deeper into the design principles of each Claude Code module? Check
 
 ## Conclusion
 
-~4300 lines of code (TS) / ~3800 lines (Python), 12 files, covering the core components and advanced capabilities of a coding agent:
+~3400 lines of code (TS), 12 files, covering the core components and advanced capabilities of a coding agent:
 
-**Phase 1 -- Core Components:** Agent Loop, Tool System (13 tools + mtime protection + lazy loading + parallel execution), System Prompt (Markdown template + @include + environment injection), CLI / Session (REPL + JSON persistence), Streaming Output (Anthropic + OpenAI dual backend + streaming tool execution), Permission Security (5 modes + declarative rules + regex + confirmation), Context Management (4-layer compression + large result persistence)
+**Phase 1 -- Core Components:** Agent Loop, Tool System (13 tools + mtime protection + lazy loading + parallel execution), System Prompt (Markdown template + @include + environment injection), CLI / Session (REPL + JSON persistence), Streaming Output (Anthropic streaming + streaming tool execution), Permission Security (5 modes + declarative rules + regex + confirmation), Context Management (4-layer compression + large result persistence)
 
 **Phase 2 -- Advanced Capabilities:** Memory System (semantic recall + async prefetch), Skills System (inline/fork dual mode), Plan Mode (read-only planning + 4-option approval), Multi-Agent (Sub-Agent + 3 built-in types + custom), MCP Integration (JSON-RPC over stdio), Budget Control
 

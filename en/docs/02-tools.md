@@ -200,7 +200,6 @@ Core principle: **Preserve the design philosophy, cut the engineering complexity
 
 ### Tool Definitions: Static Array
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts -- Tool definitions (Anthropic Tool schema format)
@@ -245,26 +244,6 @@ export const toolDefinitions: ToolDef[] = [
   // ... list_files, grep_search, run_shell
 ];
 ```
-#### **Python**
-```python
-# tools.py -- Tool definitions (Anthropic Tool schema format)
-
-tool_definitions: list[ToolDef] = [
-    {
-        "name": "read_file",
-        "description": "Read the contents of a file. Returns the file content with line numbers.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "file_path": {"type": "string", "description": "The path to the file to read"},
-            },
-            "required": ["file_path"],
-        },
-    },
-    # ... write_file, edit_file, list_files, grep_search, run_shell
-]
-```
-<!-- tabs:end -->
 
 These definitions are passed directly to the Anthropic API's `tools` parameter -- the format is exactly the same, no conversion needed.
 
@@ -272,7 +251,6 @@ These definitions are passed directly to the Anthropic API's `tools` parameter -
 
 ### Tool Execution: Switch Dispatcher
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 export async function executeTool(
@@ -292,23 +270,6 @@ export async function executeTool(
   return truncateResult(result);  // <- 50K character protection
 }
 ```
-#### **Python**
-```python
-async def execute_tool(name: str, inp: dict) -> str:
-    handlers = {
-        "read_file": _read_file,
-        "write_file": _write_file,
-        "edit_file": _edit_file,
-        "list_files": _list_files,
-        "grep_search": _grep_search,
-        "run_shell": _run_shell,
-    }
-    handler = handlers.get(name)
-    if not handler:
-        return f"Unknown tool: {name}"
-    return _truncate_result(handler(inp))
-```
-<!-- tabs:end -->
 
 The `default` branch returns `Unknown tool: ${name}` instead of throwing an exception -- embodying the "errors are data" design, allowing the model to self-correct hallucinated tool names.
 
@@ -316,7 +277,6 @@ The `default` branch returns `Unknown tool: ${name}` instead of throwing an exce
 
 #### read_file
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 function readFile(input: { file_path: string }): string {
@@ -332,24 +292,11 @@ function readFile(input: { file_path: string }): string {
   }
 }
 ```
-#### **Python**
-```python
-def _read_file(inp: dict) -> str:
-    try:
-        content = Path(inp["file_path"]).read_text()
-        lines = content.split("\n")
-        numbered = "\n".join(f"{i+1:4d} | {line}" for i, line in enumerate(lines))
-        return numbered
-    except Exception as e:
-        return f"Error reading file: {e}"
-```
-<!-- tabs:end -->
 
 Line numbers are added so the LLM can locate code positions, but `edit_file` matches against the actual content string, not line numbers.
 
 #### edit_file -- The Most Critical Tool
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 function editFile(input: {
@@ -375,32 +322,6 @@ function editFile(input: {
   }
 }
 ```
-#### **Python**
-```python
-def _edit_file(inp: dict) -> str:
-    try:
-        path = Path(inp["file_path"])
-        content = path.read_text()
-
-        # Quote-tolerant matching
-        actual = _find_actual_string(content, inp["old_string"])
-        if not actual:
-            return f"Error: old_string not found in {inp['file_path']}"
-
-        count = content.count(actual)
-        if count > 1:
-            return f"Error: old_string found {count} times in {inp['file_path']}. Must be unique."
-
-        new_content = content.replace(actual, inp["new_string"], 1)
-        path.write_text(new_content)
-
-        diff = _generate_diff(content, actual, inp["new_string"])
-        quote_note = " (matched via quote normalization)" if actual != inp["old_string"] else ""
-        return f"Successfully edited {inp['file_path']}{quote_note}\n\n{diff}"
-    except Exception as e:
-        return f"Error editing file: {e}"
-```
-<!-- tabs:end -->
 
 The unique match check is the core: 0 occurrences means the model's memory of the file contents is wrong (hallucination detection); >1 occurrences requires the model to provide more context to uniquely identify the edit point. "Better to fail than to guess" -- silently replacing the first match is far more dangerous than reporting failure.
 
@@ -408,7 +329,6 @@ The unique match check is the core: 0 occurrences means the model's memory of th
 
 LLM tokenization may map straight quotes to curly quotes (`"` -> `"`). Without a tolerance mechanism, such edits would fail 100% of the time.
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 function normalizeQuotes(s: string): string {
@@ -426,24 +346,6 @@ function findActualString(fileContent: string, searchString: string): string | n
   return null;
 }
 ```
-#### **Python**
-```python
-def _normalize_quotes(s: str) -> str:
-    s = re.sub("[\u2018\u2019\u2032]", "'", s)
-    s = re.sub('[\u201c\u201d\u2033]', '"', s)
-    return s
-
-def _find_actual_string(file_content: str, search_string: str) -> str | None:
-    if search_string in file_content:
-        return search_string
-    norm_search = _normalize_quotes(search_string)
-    norm_file = _normalize_quotes(file_content)
-    idx = norm_file.find(norm_search)
-    if idx != -1:
-        return file_content[idx:idx + len(search_string)]
-    return None
-```
-<!-- tabs:end -->
 
 Key detail: after a successful match, the **original string from the file** is returned, not the normalized version, preserving the file's original character style during replacement.
 
@@ -459,7 +361,6 @@ Successfully edited src/app.ts (matched via quote normalization)
 
 #### write_file
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 function writeFile(input: { file_path: string; content: string }): string {
@@ -473,28 +374,11 @@ function writeFile(input: { file_path: string; content: string }): string {
   }
 }
 ```
-#### **Python**
-```python
-def _write_file(inp: dict) -> str:
-    try:
-        path = Path(inp["file_path"])
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(inp["content"])
-        lines = inp["content"].split("\n")
-        line_count = len(lines)
-        preview = "\n".join(f"{i+1:4d} | {l}" for i, l in enumerate(lines[:30]))
-        trunc = f"\n  ... ({line_count} lines total)" if line_count > 30 else ""
-        return f"Successfully wrote to {inp['file_path']} ({line_count} lines)\n\n{preview}{trunc}"
-    except Exception as e:
-        return f"Error writing file: {e}"
-```
-<!-- tabs:end -->
 
 Auto-creating parent directories (`mkdir -p` effect) avoids the model needing an extra shell command. The System Prompt tells the LLM to prefer `edit_file` and only use `write_file` for new files.
 
 #### grep_search
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 function grepSearch(input: {
@@ -521,32 +405,6 @@ function grepSearch(input: {
   }
 }
 ```
-#### **Python**
-```python
-def _grep_search(inp: dict) -> str:
-    pattern = inp["pattern"]
-    path = inp.get("path") or "."
-    include = inp.get("include")
-
-    try:
-        args = ["grep", "--line-number", "--color=never", "-r"]
-        if include:
-            args.append(f"--include={include}")
-        args.extend(["--", pattern, path])
-        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
-        if result.returncode == 1:
-            return "No matches found."
-        if result.returncode != 0:
-            return f"Error: {result.stderr}"
-        lines = [l for l in result.stdout.split("\n") if l]
-        output = "\n".join(lines[:100])
-        if len(lines) > 100:
-            output += f"\n... and {len(lines) - 100} more matches"
-        return output
-    except Exception as e:
-        return f"Error: {e}"
-```
-<!-- tabs:end -->
 
 `--color=never` disables ANSI color codes (the output is for the model, not for human eyes). The Python version's `--` separator ensures patterns starting with `-` aren't misinterpreted as grep options.
 
@@ -556,7 +414,6 @@ Claude Code uses ripgrep (`rg`); we use system `grep` -- functionally sufficient
 
 #### run_shell
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 function runShell(input: { command: string; timeout?: number }): string {
@@ -575,29 +432,6 @@ function runShell(input: { command: string; timeout?: number }): string {
   }
 }
 ```
-#### **Python**
-```python
-def _run_shell(inp: dict) -> str:
-    try:
-        timeout = inp.get("timeout", 30)
-        result = subprocess.run(
-            inp["command"],
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if result.returncode != 0:
-            stderr = f"\nStderr: {result.stderr}" if result.stderr else ""
-            stdout = f"\nStdout: {result.stdout}" if result.stdout else ""
-            return f"Command failed (exit code {result.returncode}){stdout}{stderr}"
-        return result.stdout or "(no output)"
-    except subprocess.TimeoutExpired:
-        return f"Command timed out after {inp.get('timeout', 30)}s"
-    except Exception as e:
-        return f"Error: {e}"
-```
-<!-- tabs:end -->
 
 On failure, both stdout and stderr are returned -- many compilers output errors on stderr while stdout may contain useful partial output. `"(no output)"` prevents the model from getting confused when a command succeeds but produces no output (`mkdir`, `touch`).
 
@@ -605,7 +439,6 @@ Claude Code's BashTool spans 18 source files, with AST command parsing, sandboxe
 
 ### Tool Result Truncation
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 const MAX_RESULT_CHARS = 50000;
@@ -620,21 +453,6 @@ function truncateResult(result: string): string {
   );
 }
 ```
-#### **Python**
-```python
-MAX_RESULT_CHARS = 50000
-
-def _truncate_result(result: str) -> str:
-    if len(result) <= MAX_RESULT_CHARS:
-        return result
-    keep_each = (MAX_RESULT_CHARS - 60) // 2
-    return (
-        result[:keep_each]
-        + f"\n\n[... truncated {len(result) - keep_each * 2} chars ...]\n\n"
-        + result[-keep_each:]
-    )
-```
-<!-- tabs:end -->
 
 Keeping both head and tail rather than just the head, because many commands produce critical output at the end (compilation error summaries, test result statistics). The truncation notice explicitly tells the model that content was truncated, so the model can decide whether to use `grep_search` or `read_file` to get the full content.
 
@@ -642,7 +460,6 @@ Keeping both head and tail rather than just the head, because many commands prod
 
 Lets the Agent access URLs to retrieve content -- looking up documentation, reading API responses, scraping web information:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts -- web_fetch definition
@@ -695,7 +512,6 @@ case "web_fetch": {
   break;
 }
 ```
-<!-- tabs:end -->
 
 Design choices:
 - **30-second timeout**: Prevents the model from blocking the entire loop on slow or unresponsive URLs
@@ -707,7 +523,6 @@ Design choices:
 
 An important safety mechanism from Claude Code: **a file must be read before it can be edited**. This prevents the model from blindly modifying files without knowing their current contents, and detects external modifications to avoid overwriting the user's manual edits.
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts -- mtime tracking in executeTool
@@ -751,7 +566,6 @@ export async function executeTool(
   }
 }
 ```
-<!-- tabs:end -->
 
 Three key points:
 - **readFileState Map** is maintained in the Agent instance, with absolute paths as keys and `mtimeMs` at last read as values
@@ -764,7 +578,6 @@ This aligns with Claude Code's `readFileTimestamps` mechanism -- edits must be b
 
 When the number of tools grows large (66+), sending all tool schemas to the API wastes significant tokens. Claude Code's approach is **deferred loading**: infrequently used tools only have their names sent, and the model activates them on demand via `ToolSearch`.
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts -- deferred flag
@@ -811,7 +624,6 @@ case "tool_search": {
   })), null, 2);
 }
 ```
-<!-- tabs:end -->
 
 Workflow:
 1. During API calls, `getActiveToolDefinitions()` filters out unactivated deferred tools (only names sent, no schemas)

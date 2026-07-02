@@ -73,7 +73,6 @@ flowchart LR
     Map --> Cache["cachedSkills[]"]
 ```
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // skills.ts -- discoverSkills
@@ -92,33 +91,11 @@ export function discoverSkills(): SkillDefinition[] {
   return cachedSkills;
 }
 ```
-#### **Python**
-```python
-# skills.py -- discover_skills
-
-_cached_skills: list[SkillDefinition] | None = None
-
-
-def discover_skills() -> list[SkillDefinition]:
-    global _cached_skills
-    if _cached_skills is not None:
-        return _cached_skills
-
-    skills: dict[str, SkillDefinition] = {}
-
-    _load_skills_from_dir(Path.home() / ".claude" / "skills", "user", skills)
-    _load_skills_from_dir(Path.cwd() / ".claude" / "skills", "project", skills)
-
-    _cached_skills = list(skills.values())
-    return _cached_skills
-```
-<!-- tabs:end -->
 
 Using a Map for deduplication naturally implements "project-level overrides user-level" -- load user first, then project; same-name keys get overwritten by the latter. Claude Code has 6 sources because it needs to support enterprise and MCP scenarios; project + user covers the core needs of individual developers.
 
 ### Skill Parsing
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // skills.ts -- parseSkillFile
@@ -152,50 +129,11 @@ function parseSkillFile(
   };
 }
 ```
-#### **Python**
-```python
-# skills.py -- _parse_skill_file
-
-def _parse_skill_file(
-    file_path: Path, source: str, skill_dir: str
-) -> SkillDefinition | None:
-    try:
-        raw = file_path.read_text()
-        result = parse_frontmatter(raw)
-        meta = result.meta
-
-        name = meta.get("name") or file_path.parent.name or "unknown"
-        user_invocable = meta.get("user-invocable", "true") != "false"
-        context = "fork" if meta.get("context") == "fork" else "inline"
-
-        allowed_tools: list[str] | None = None
-        if "allowed-tools" in meta:
-            raw_tools = meta["allowed-tools"]
-            if raw_tools.startswith("["):
-                try:
-                    allowed_tools = json.loads(raw_tools)
-                except Exception:
-                    allowed_tools = [s.strip() for s in raw_tools.strip("[]").split(",")]
-            else:
-                allowed_tools = [s.strip() for s in raw_tools.split(",")]
-
-        return SkillDefinition(
-            name=name, description=meta.get("description", ""),
-            when_to_use=meta.get("when_to_use") or meta.get("when-to-use"),
-            allowed_tools=allowed_tools, user_invocable=user_invocable,
-            context=context, prompt_template=result.body,
-            source=source, skill_dir=skill_dir,
-        )
-    except Exception:
-        return None
-```
-<!-- tabs:end -->
 
 `allowed-tools` supports both comma-separated and JSON array formats, trying JSON.parse first and falling back to comma splitting on failure -- both formats are natural when writing YAML, and fault-tolerant parsing prevents skill loading failures due to formatting issues. `when_to_use` accepts both underscore and hyphen key names for the same reason.
 
 ### Prompt Template Substitution
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // skills.ts -- resolveSkillPrompt
@@ -207,17 +145,6 @@ export function resolveSkillPrompt(skill: SkillDefinition, args: string): string
   return prompt;
 }
 ```
-#### **Python**
-```python
-# skills.py -- resolve_skill_prompt
-
-def resolve_skill_prompt(skill: SkillDefinition, args: str) -> str:
-    prompt = skill.prompt_template
-    prompt = re.sub(r"\$ARGUMENTS|\$\{ARGUMENTS\}", args, prompt)
-    prompt = prompt.replace("${CLAUDE_SKILL_DIR}", skill.skill_dir)
-    return prompt
-```
-<!-- tabs:end -->
 
 `$ARGUMENTS` is replaced with user-provided arguments, and `${CLAUDE_SKILL_DIR}` is replaced with the skill directory path (skills can place template files in their directory and reference them with `read_file` in the prompt). Claude Code also supports `` !`shell_command` `` inline execution, which we haven't implemented -- it adds security risk and isn't needed for tutorial scenarios.
 
@@ -242,7 +169,6 @@ flowchart TD
 
 **Path 1: User manual invocation** (cli.ts)
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 if (input.startsWith("/")) {
@@ -258,24 +184,9 @@ if (input.startsWith("/")) {
   }
 }
 ```
-#### **Python**
-```python
-if inp.startswith("/"):
-    space_idx = inp.find(" ")
-    cmd_name = inp[1:space_idx] if space_idx > 0 else inp[1:]
-    cmd_args = inp[space_idx + 1:] if space_idx > 0 else ""
-    skill = get_skill_by_name(cmd_name)
-    if skill and skill.user_invocable:
-        resolved = resolve_skill_prompt(skill, cmd_args)
-        print_info(f"Invoking skill: {skill.name}")
-        await agent.chat(resolved)
-        continue
-```
-<!-- tabs:end -->
 
 **Path 2: Model programmatic invocation** (tools.ts)
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts -- skill tool definition and execution
@@ -298,36 +209,11 @@ function runSkillTool(input: { skill_name: string; args?: string }): string {
   return `[Skill "${input.skill_name}" activated]\n\n${result.prompt}`;
 }
 ```
-#### **Python**
-```python
-# tools.py -- skill tool definition and execution
-
-{
-    "name": "skill",
-    "description": "Invoke a registered skill by name...",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "skill_name": {"type": "string"},
-            "args": {"type": "string"},
-        },
-        "required": ["skill_name"],
-    },
-}
-
-async def _execute_skill_tool(self, inp: dict) -> str:
-    result = execute_skill(inp.get("skill_name", ""), inp.get("args", ""))
-    if not result:
-        return f"Unknown skill: {inp.get('skill_name', '')}"
-    return f'[Skill "{inp.get("skill_name", "")}" activated]\n\n{result["prompt"]}'
-```
-<!-- tabs:end -->
 
 After the model calls the `skill` tool, it receives the expanded prompt text and executes the task according to that prompt in subsequent turns. This is essentially a **meta-tool** -- the tool's return value isn't data, but instructions.
 
 ### Execution Modes: inline vs fork
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts -- executeSkillTool
@@ -353,40 +239,11 @@ private async executeSkillTool(input: Record<string, any>): Promise<string> {
   return `[Skill "${input.skill_name}" activated]\n\n${result.prompt}`;
 }
 ```
-#### **Python**
-```python
-# agent.py -- _execute_skill_tool
-
-async def _execute_skill_tool(self, inp: dict) -> str:
-    result = execute_skill(inp.get("skill_name", ""), inp.get("args", ""))
-    if not result:
-        return f"Unknown skill: {inp.get('skill_name', '')}"
-
-    if result["context"] == "fork":
-        tools = (
-            [t for t in self.tools if t["name"] in result["allowed_tools"]]
-            if result.get("allowed_tools")
-            else [t for t in self.tools if t["name"] != "agent"]
-        )
-        sub_agent = Agent(
-            model=self.model,
-            custom_system_prompt=result["prompt"],
-            custom_tools=tools,
-            is_sub_agent=True,
-            permission_mode="bypassPermissions",
-        )
-        sub_result = await sub_agent.run_once(inp.get("args") or "Execute this skill task.")
-        return sub_result["text"] or "(Skill produced no output)"
-
-    return f'[Skill "{inp.get("skill_name", "")}" activated]\n\n{result["prompt"]}'
-```
-<!-- tabs:end -->
 
 When forking, the sub-Agent's tools are constrained by the `allowedTools` whitelist; if unspecified, the `agent` tool is excluded to prevent recursion. Use fork when a skill needs multiple rounds of tool calls (like code review reading multiple files) to keep the main conversation clean.
 
 ### System Prompt Description
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // skills.ts -- buildSkillDescriptions
@@ -419,39 +276,6 @@ export function buildSkillDescriptions(): string {
   return lines.join("\n");
 }
 ```
-#### **Python**
-```python
-# skills.py -- build_skill_descriptions
-
-def build_skill_descriptions() -> str:
-    skills = discover_skills()
-    if not skills:
-        return ""
-
-    lines = ["# Available Skills", ""]
-    invocable = [s for s in skills if s.user_invocable]
-    auto_only = [s for s in skills if not s.user_invocable]
-
-    if invocable:
-        lines.append("User-invocable skills (user types /<name> to invoke):")
-        for s in invocable:
-            lines.append(f"- **/{s.name}**: {s.description}")
-            if s.when_to_use:
-                lines.append(f"  When to use: {s.when_to_use}")
-        lines.append("")
-
-    if auto_only:
-        lines.append("Auto-invocable skills (use the skill tool when appropriate):")
-        for s in auto_only:
-            lines.append(f"- **{s.name}**: {s.description}")
-            if s.when_to_use:
-                lines.append(f"  When to use: {s.when_to_use}")
-        lines.append("")
-
-    lines.append("To invoke a skill programmatically, use the `skill` tool.")
-    return "\n".join(lines)
-```
-<!-- tabs:end -->
 
 Skills are displayed in two groups: user-invocable ones get the `/` prefix, model-only ones don't. `whenToUse` is the judgment condition shown to the model for deciding whether to trigger proactively. Claude Code also implements token budget control (`formatCommandsWithinBudget()`), which we skip -- tutorial scenarios have limited skill counts.
 

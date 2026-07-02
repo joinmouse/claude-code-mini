@@ -78,7 +78,6 @@ User said "don't summarize at the end of responses" because they can review diff
 
 Both memory and skills need to parse YAML frontmatter, so it's extracted into `frontmatter.ts`:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // frontmatter.ts
@@ -106,49 +105,11 @@ export function parseFrontmatter(content: string): FrontmatterResult {
   return { meta, body };
 }
 ```
-#### **Python**
-```python
-# frontmatter.py
-
-@dataclass
-class FrontmatterResult:
-    meta: dict[str, str] = field(default_factory=dict)
-    body: str = ""
-
-
-def parse_frontmatter(content: str) -> FrontmatterResult:
-    lines = content.split("\n")
-    if not lines or lines[0].strip() != "---":
-        return FrontmatterResult(body=content)
-
-    end_idx = -1
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            end_idx = i
-            break
-    if end_idx == -1:
-        return FrontmatterResult(body=content)
-
-    meta: dict[str, str] = {}
-    for i in range(1, end_idx):
-        colon_idx = lines[i].find(":")
-        if colon_idx == -1:
-            continue
-        key = lines[i][:colon_idx].strip()
-        value = lines[i][colon_idx + 1:].strip()
-        if key:
-            meta[key] = value
-
-    body = "\n".join(lines[end_idx + 1:]).strip()
-    return FrontmatterResult(meta=meta, body=body)
-```
-<!-- tabs:end -->
 
 No library like `js-yaml` is used -- our frontmatter is just simple `key: value` pairs, and a 20-line hand-written parser is sufficient with zero dependencies.
 
 ### Saving and Indexing
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // memory.ts -- saveMemory
@@ -174,34 +135,11 @@ function updateMemoryIndex(): void {
   writeFileSync(getIndexPath(), lines.join("\n"));
 }
 ```
-#### **Python**
-```python
-# memory.py -- save_memory
-
-def save_memory(name: str, description: str, type: str, content: str) -> str:
-    d = get_memory_dir()
-    filename = f"{type}_{_slugify(name)}.md"
-    text = format_frontmatter(
-        {"name": name, "description": description, "type": type}, content
-    )
-    (d / filename).write_text(text)
-    _update_memory_index()
-    return filename
-
-def _update_memory_index() -> None:
-    memories = list_memories()
-    lines = ["# Memory Index", ""]
-    for m in memories:
-        lines.append(f"- **[{m.name}]({m.filename})** ({m.type}) — {m.description}")
-    _get_index_path().write_text("\n".join(lines))
-```
-<!-- tabs:end -->
 
 The filename format `{type}_{slugified_name}.md` makes files automatically group by type when sorted in the filesystem, and is easy to scan visually. The index is rebuilt immediately after each write to keep MEMORY.md in sync with the filesystem.
 
 ### Index Truncation
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // memory.ts -- loadMemoryIndex
@@ -223,26 +161,6 @@ export function loadMemoryIndex(): string {
   return content;
 }
 ```
-#### **Python**
-```python
-# memory.py -- load_memory_index
-
-MAX_INDEX_LINES = 200
-MAX_INDEX_BYTES = 25000
-
-def load_memory_index() -> str:
-    index_path = _get_index_path()
-    if not index_path.exists():
-        return ""
-    content = index_path.read_text()
-    lines = content.split("\n")
-    if len(lines) > MAX_INDEX_LINES:
-        content = "\n".join(lines[:MAX_INDEX_LINES]) + "\n\n[... truncated, too many memory entries ...]"
-    if len(content.encode()) > MAX_INDEX_BYTES:
-        content = content[:MAX_INDEX_BYTES] + "\n\n[... truncated, index too large ...]"
-    return content
-```
-<!-- tabs:end -->
 
 The two truncation layers serve different purposes: line truncation (200 lines) is normal protection, cutting at complete entry boundaries; byte truncation (25KB) is abnormal defense, catching cases where line count is low but individual lines are extremely long -- the Claude Code team has seen cases in production with 197KB crammed into 200 lines.
 
@@ -250,7 +168,6 @@ The two truncation layers serve different purposes: line truncation (200 lines) 
 
 `buildMemoryPromptSection()` generates text injected into the system prompt, telling the model about the memory system's existence and usage:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // memory.ts -- buildMemoryPromptSection (simplified)
@@ -284,60 +201,20 @@ Filename format: \`{type}_{slugified_name}.md\`
 ${index ? `## Current Memory Index\n${index}` : "(No memories saved yet.)"}`;
 }
 ```
-#### **Python**
-```python
-# memory.py -- build_memory_prompt_section (simplified)
-
-def build_memory_prompt_section() -> str:
-    index = load_memory_index()
-    memory_dir = str(get_memory_dir())
-
-    return f"""# Memory System
-
-You have a persistent, file-based memory system at `{memory_dir}`.
-
-## Memory Types
-- **user**: User's role, preferences, knowledge level
-- **feedback**: Corrections and guidance from the user
-- **project**: Ongoing work, goals, deadlines, decisions
-- **reference**: Pointers to external resources
-
-## How to Save Memories
-Use the write_file tool to create a memory file with YAML frontmatter:
-...
-Save to: `{memory_dir}/`
-Filename format: `{{type}}_{{slugified_name}}.md`
-
-## What NOT to Save
-- Code patterns or architecture (read the code instead)
-- Git history (use git log)
-- Anything already in CLAUDE.md
-- Ephemeral task details
-
-{"## Current Memory Index" + chr(10) + index if index else "(No memories saved yet.)"}"""
-```
-<!-- tabs:end -->
 
 This prompt does three things: teaches the model classification (four types), teaches it operations (use `write_file`, where to save, what format), and teaches it restraint ("What NOT to Save"). "Making the model use memory" isn't just about giving it a tool -- you also need to describe the complete type system and boundaries in the prompt so the model can make good decisions.
 
 Finally, it's injected in `prompt.ts` via a placeholder:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 systemPrompt = systemPrompt.replace("{{memory}}", buildMemoryPromptSection());
 ```
-#### **Python**
-```python
-result = result.replace("{{memory}}", build_memory_prompt_section())
-```
-<!-- tabs:end -->
 
 ### CLI Interaction
 
 Users can type `/memory` in the REPL to list all memories:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 if (input === "/memory") {
@@ -352,19 +229,6 @@ if (input === "/memory") {
   }
 }
 ```
-#### **Python**
-```python
-if inp == "/memory":
-    memories = list_memories()
-    if not memories:
-        print_info("No memories saved yet.")
-    else:
-        print_info(f"{len(memories)} memories:")
-        for m in memories:
-            print(f"    [{m.type}] {m.name} — {m.description}")
-    continue
-```
-<!-- tabs:end -->
 
 ---
 

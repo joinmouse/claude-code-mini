@@ -79,7 +79,6 @@ A typical API response has a 5-30 second streaming window, during which multiple
 
 We merge the two-layer architecture into a single `Agent` class, with `chatAnthropic()` as the core method:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts -- chatAnthropic method (core Agent Loop)
@@ -151,69 +150,6 @@ private async chatAnthropic(userMessage: string): Promise<void> {
   }
 }
 ```
-#### **Python**
-```python
-# agent.py -- _chat_anthropic method (core Agent Loop)
-
-async def _chat_anthropic(self, user_message: str) -> None:
-    self._anthropic_messages.append({"role": "user", "content": user_message})
-    # Trigger auto-compact at the turn boundary: the last message is now
-    # plain user text, so _compact_anthropic's [:-1] won't sever a
-    # tool_use <-> tool_result pair (see Chapter 7).
-    await self._check_and_compact()
-
-    while True:
-        if self._aborted:
-            break
-
-        self._run_compression_pipeline()
-        response = await self._call_anthropic_stream()
-
-        self.total_input_tokens += response.usage.input_tokens
-        self.total_output_tokens += response.usage.output_tokens
-        self.last_input_token_count = response.usage.input_tokens
-
-        tool_uses = [b for b in response.content if b.type == "tool_use"]
-
-        self._anthropic_messages.append({
-            "role": "assistant",
-            "content": [self._block_to_dict(b) for b in response.content],
-        })
-
-        if not tool_uses:
-            if not self.is_sub_agent:
-                print_cost(self.total_input_tokens, self.total_output_tokens)
-            break
-
-        tool_results = []
-        for tu in tool_uses:
-            if self._aborted:
-                break
-            inp = dict(tu.input) if hasattr(tu.input, 'items') else tu.input
-            print_tool_call(tu.name, inp)
-
-            # Permission check (see Chapter 6)
-            perm = check_permission(tu.name, inp, self.permission_mode, self._plan_file_path)
-            if perm["action"] == "deny":
-                tool_results.append({"type": "tool_result", "tool_use_id": tu.id,
-                                     "content": f"Action denied: {perm.get('message', '')}"})
-                continue
-            if perm["action"] == "confirm" and perm.get("message") \
-               and perm["message"] not in self._confirmed_paths:
-                confirmed = await self._confirm_dangerous(perm["message"])
-                if not confirmed:
-                    tool_results.append({"type": "tool_result", "tool_use_id": tu.id,
-                                         "content": "User denied this action."})
-                    continue
-                self._confirmed_paths.add(perm["message"])
-
-            result = await self._execute_tool_call(tu.name, inp)
-            print_tool_result(tu.name, result)
-            tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result})
-
-        self._anthropic_messages.append({"role": "user", "content": tool_results})
-```
-<!-- tabs:end -->
 
 ### How the Message Array Grows
 
@@ -245,7 +181,6 @@ Each loop iteration adds two messages to the array: one assistant, one user (too
 
 ### AbortController: Graceful Interruption
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 async chat(userMessage: string): Promise<void> {
@@ -263,25 +198,6 @@ abort() {
   this.abortController?.abort();
 }
 ```
-#### **Python**
-```python
-async def chat(self, user_message: str) -> None:
-    self._aborted = False
-    try:
-        if self.use_openai:
-            await self._chat_openai(user_message)
-        else:
-            await self._chat_anthropic(user_message)
-    finally:
-        pass
-    if not self.is_sub_agent:
-        print_divider()
-        self._auto_save()
-
-def abort(self) -> None:
-    self._aborted = True
-```
-<!-- tabs:end -->
 
 `AbortController` is the standard interruption mechanism: once `abort()` is called, the signal becomes `aborted`, and the loop exits at the next checkpoint. The signal is also passed to the API call, ensuring network requests can be cancelled too.
 

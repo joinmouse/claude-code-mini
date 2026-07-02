@@ -72,7 +72,6 @@ graph TD
 
 ### 第 0 层：执行时截断（truncateResult）
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts
@@ -88,22 +87,6 @@ function truncateResult(result: string): string {
   );
 }
 ```
-#### **Python**
-```python
-# tools.py
-MAX_RESULT_CHARS = 50000
-
-def _truncate_result(result: str) -> str:
-    if len(result) <= MAX_RESULT_CHARS:
-        return result
-    keep_each = (MAX_RESULT_CHARS - 60) // 2
-    return (
-        result[:keep_each]
-        + f"\n\n[... truncated {len(result) - keep_each * 2} chars ...]\n\n"
-        + result[-keep_each:]
-    )
-```
-<!-- tabs:end -->
 
 保留头尾而非只保留头部：文件开头有 imports、类定义等结构信息，命令输出的错误摘要通常在最后。
 
@@ -146,7 +129,6 @@ private persistLargeResult(toolName: string, result: string): string {
 
 随上下文压力动态收紧历史中工具结果的大小：
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -171,34 +153,11 @@ private budgetToolResultsAnthropic(): void {
   }
 }
 ```
-#### **Python**
-```python
-# agent.py
-def _budget_tool_results_anthropic(self) -> None:
-    utilization = self.last_input_token_count / self.effective_window if self.effective_window else 0
-    if utilization < 0.5:
-        return
-    budget = 15000 if utilization > 0.70 else 30000
-    for msg in self._anthropic_messages:
-        if msg.get("role") != "user" or not isinstance(msg.get("content"), list):
-            continue
-        for block in msg["content"]:
-            if (isinstance(block, dict) and block.get("type") == "tool_result"
-                    and isinstance(block.get("content"), str) and len(block["content"]) > budget):
-                keep = (budget - 80) // 2
-                block["content"] = (
-                    block["content"][:keep]
-                    + f"\n\n[... budgeted: {len(block['content']) - keep * 2} chars truncated ...]\n\n"
-                    + block["content"][-keep:]
-                )
-```
-<!-- tabs:end -->
 
 第 0 层是一次性的 50K 硬限制；Budget 是每次 API 调用前重算，预算随利用率自动收紧。用双阈值（50%/70%）而非单阈值，是为了在上下文还宽裕时多保留细节。
 
 ### 第 2 层：Snip — 替换过时的工具结果
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -206,14 +165,6 @@ const SNIPPABLE_TOOLS = new Set(["read_file", "grep_search", "list_files", "run_
 const SNIP_PLACEHOLDER = "[Content snipped - re-read if needed]";
 const KEEP_RECENT_RESULTS = 3;
 ```
-#### **Python**
-```python
-# agent.py
-SNIPPABLE_TOOLS = {"read_file", "grep_search", "list_files", "run_shell"}
-SNIP_PLACEHOLDER = "[Content snipped - re-read if needed]"
-KEEP_RECENT_RESULTS = 3
-```
-<!-- tabs:end -->
 
 Snip 策略（利用率 > 60% 时触发）：
 - 同一文件被 `read_file` 多次读取 → 只保留最新一次，旧的 snip
@@ -224,7 +175,6 @@ Snip 策略（利用率 > 60% 时触发）：
 
 ### 第 3 层：Microcompact — 缓存冷启动时激进清理
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -236,17 +186,6 @@ private microcompactAnthropic(): void {
   // 除最近 3 个外，所有旧 tool_result → "[Old result cleared]"
 }
 ```
-#### **Python**
-```python
-# agent.py
-MICROCOMPACT_IDLE_S = 5 * 60
-
-def _microcompact_anthropic(self) -> None:
-    if not self.last_api_call_time or (time.time() - self.last_api_call_time) < MICROCOMPACT_IDLE_S:
-        return
-    # 除最近 3 个外，所有旧 tool_result → "[Old result cleared]"
-```
-<!-- tabs:end -->
 
 用时间触发的原因：prompt cache 有 TTL，空闲超过 5 分钟后缓存大概率已过期，继续保留旧消息内容没有成本优势，不如激进清理。
 
@@ -258,7 +197,6 @@ Snip 是选择性的（只替换"过时"结果），Microcompact 是无差别的
 
 #### 触发条件
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -269,23 +207,13 @@ private async checkAndCompact(): Promise<void> {
   }
 }
 ```
-#### **Python**
-```python
-# agent.py
-async def _check_and_compact(self) -> None:
-    if self.last_input_token_count > self.effective_window * 0.85:
-        print_info("Context window filling up, compacting conversation...")
-        await self._compact_conversation()
-```
-<!-- tabs:end -->
 
 `effectiveWindow = 模型上下文窗口 - 20000`，预留给新一轮输入/输出。对 Claude（200K 窗口），触发点约在 76.5% 总利用率。
 
-> ⚠️ **调用方契约**：`checkAndCompact` 只能在 turn boundary 调用（用户输入 push 进消息数组之后、API 调用之前）。下面的 `compactAnthropic` / `compactOpenAI` 会把消息数组的最后一条当成"已被处理的纯文本 user 消息"——它会先 `slice(0, -1)` 去生成摘要，再在最后把这条消息 append 回来。一旦在 tool 循环中段调用，最后一条会是 `tool_result`（Anthropic）或 `tool` role（OpenAI），slice 后前面 `assistant` 的 `tool_use` / `tool_calls` 失去配对，API 会直接报错。
+> ⚠️ **调用方契约**：`checkAndCompact` 只能在 turn boundary 调用（用户输入 push 进消息数组之后、API 调用之前）。下面的 `compactAnthropic` 会把消息数组的最后一条当成“已被处理的纯文本 user 消息”——它会先 `slice(0, -1)` 去生成摘要，再在最后把这条消息 append 回来。一旦在 tool 循环中段调用，最后一条会是 `tool_result`，slice 后前面 `assistant` 的 `tool_use` 失去配对，API 会直接报错。
 
 #### Anthropic 后端压缩
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -331,115 +259,8 @@ private async compactAnthropic(): Promise<void> {
   this.lastInputTokenCount = 0;
 }
 ```
-#### **Python**
-```python
-# agent.py
-async def _compact_anthropic(self) -> None:
-    if len(self._anthropic_messages) < 4:
-        return
-
-    last_user_msg = self._anthropic_messages[-1]
-
-    summary_resp = await self._anthropic_client.messages.create(
-        model=self.model,
-        max_tokens=2048,
-        system="You are a conversation summarizer. Be concise but preserve important details.",
-        messages=[
-            *self._anthropic_messages[:-1],
-            {"role": "user", "content": "Summarize the conversation so far in a concise paragraph, "
-             "preserving key decisions, file paths, and context needed to continue the work."},
-        ],
-    )
-    summary_text = (summary_resp.content[0].text
-                    if summary_resp.content and summary_resp.content[0].type == "text"
-                    else "No summary available.")
-
-    self._anthropic_messages = [
-        {"role": "user", "content": f"[Previous conversation summary]\n{summary_text}"},
-        {"role": "assistant", "content": "Understood. I have the context from our previous conversation. How can I continue helping?"},
-    ]
-
-    if last_user_msg.get("role") == "user":
-        self._anthropic_messages.append(last_user_msg)
-    self.last_input_token_count = 0
-```
-<!-- tabs:end -->
 
 与 Claude Code 的主要差异：Claude Code 用"分析-摘要"两阶段提示词生成更高质量的摘要，压缩后恢复最近 5 个文件和活跃技能，有熔断器防无限循环。我们是简化版——单段摘要、无恢复机制、无熔断。
-
-#### OpenAI 后端压缩
-
-OpenAI 的 system prompt 在消息数组中（`role: "system"`），压缩时需要额外保留：
-
-<!-- tabs:start -->
-#### **TypeScript**
-```typescript
-// agent.ts
-private async compactOpenAI(): Promise<void> {
-  if (this.openaiMessages.length < 5) return;
-
-  const systemMsg = this.openaiMessages[0];
-  const lastUserMsg = this.openaiMessages[this.openaiMessages.length - 1];
-
-  const summaryResp = await this.openaiClient!.chat.completions.create({
-    model: this.model,
-    max_tokens: 2048,
-    messages: [
-      { role: "system", content: "You are a conversation summarizer. Be concise but preserve important details." },
-      ...this.openaiMessages.slice(1, -1),
-      { role: "user", content: "Summarize the conversation so far..." },
-    ],
-  });
-
-  const summaryText = summaryResp.choices[0]?.message?.content || "No summary available.";
-
-  this.openaiMessages = [
-    systemMsg,
-    { role: "user", content: `[Previous conversation summary]\n${summaryText}` },
-    { role: "assistant", content: "Understood. I have the context..." },
-  ];
-
-  if ((lastUserMsg as any).role === "user") {
-    this.openaiMessages.push(lastUserMsg);
-  }
-
-  this.lastInputTokenCount = 0;
-}
-```
-#### **Python**
-```python
-# agent.py
-async def _compact_openai(self) -> None:
-    if len(self._openai_messages) < 5:
-        return
-
-    system_msg = self._openai_messages[0]
-    last_user_msg = self._openai_messages[-1]
-
-    summary_resp = await self._openai_client.chat.completions.create(
-        model=self.model,
-        max_tokens=2048,
-        messages=[
-            {"role": "system", "content": "You are a conversation summarizer. Be concise but preserve important details."},
-            *self._openai_messages[1:-1],
-            {"role": "user", "content": "Summarize the conversation so far..."},
-        ],
-    )
-    summary_text = summary_resp.choices[0].message.content or "No summary available."
-
-    self._openai_messages = [
-        system_msg,
-        {"role": "user", "content": f"[Previous conversation summary]\n{summary_text}"},
-        {"role": "assistant", "content": "Understood. I have the context..."},
-    ]
-
-    if last_user_msg.get("role") == "user":
-        self._openai_messages.append(last_user_msg)
-    self.last_input_token_count = 0
-```
-<!-- tabs:end -->
-
-守卫条件是 `< 5` 而非 `< 4`，因为 OpenAI 消息数组最少包含 system + 2 轮对话 + 最新用户消息 = 5 条。
 
 ### 手动压缩
 
@@ -448,32 +269,23 @@ async def _compact_openai(self) -> None:
   ℹ Conversation compacted.
 ```
 
-调用链：`cli.ts` → `agent.compact()` → `compactConversation()` → `compactAnthropic()` / `compactOpenAI()`
+调用链：`cli.ts` → `agent.compact()` → `compactConversation()` → `compactAnthropic()`
 
 ### Token 统计与管道编排
 
 每次 API 调用后更新：
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 this.totalInputTokens += response.usage.input_tokens;
 this.totalOutputTokens += response.usage.output_tokens;
 this.lastInputTokenCount = response.usage.input_tokens;
 ```
-#### **Python**
-```python
-self.total_input_tokens += response.usage.input_tokens
-self.total_output_tokens += response.usage.output_tokens
-self.last_input_token_count = response.usage.input_tokens
-```
-<!-- tabs:end -->
 
 `lastInputTokenCount` 用于判断是否接近窗口上限；`totalInputTokens` 累计所有调用用于费用估算。我们直接用 API 返回值，比 Claude Code 的锚点+估算方案简单，够用。
 
 4 层在每次 API 调用前顺序执行：
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 private runCompressionPipeline(): void {
@@ -482,19 +294,6 @@ private runCompressionPipeline(): void {
   this.microcompactAnthropic();         // Tier 3
 }
 ```
-#### **Python**
-```python
-def _run_compression_pipeline(self) -> None:
-    if self.use_openai:
-        self._budget_tool_results_openai()
-        self._snip_stale_results_openai()
-        self._microcompact_openai()
-    else:
-        self._budget_tool_results_anthropic()
-        self._snip_stale_results_anthropic()
-        self._microcompact_anthropic()
-```
-<!-- tabs:end -->
 
 Tier 1-3 在每次 API 调用**前**运行（零 API 成本），Tier 4 在 **turn boundary 触发**——即每次用户输入 push 进消息数组后、`while` 主循环开始前。**不要**把 Tier 4 放在 tool 循环末尾：那时最后一条消息是 `{role: "user", content: [tool_result, ...]}`，`compactAnthropic` 内部的 `slice(0, -1)` 会切断它与前一条 `assistant` 消息里 `tool_use` 的配对，Anthropic API 会以 *"tool_use ids were found without tool_result blocks immediately after"* 拒绝那次 summarize 请求。`lastInputTokenCount` 在新位置仍然有效——它反映上一轮最后一次 API call 的状态，足以判断是否触发。顺序也有意义：Budget 先压缩大结果，让 Snip 的去重判断更准确，Microcompact 最后在时间条件满足时无差别清理。
 

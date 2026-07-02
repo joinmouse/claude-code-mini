@@ -12,7 +12,7 @@ AI 辅助编程大致经历了三个阶段：**代码补全**（Copilot）→ **
 
 前两个阶段的共同限制是：**模型不能执行操作**。它只能给建议，无法自己跑测试看结果。
 
-Claude Code 是一个质的飞跃。你说"给这个项目加用户注册功能"，它会自己搜索路由定义、读取数据库模型、创建 handler 文件、注册路由、写测试、运行 `npm test`、看到失败、修复、再跑——循环十几次，直到通过为止。
+Claude Code 是一个质的飞跃。你说“给这个项目加用户注册功能”，它会自己搜索路由定义、读取数据库模型、创建 handler 文件、注册路由、写测试、运行 `npm test`、看到失败、修复、再跑——循环十几次，直到通过为止。
 
 这就是 **受控工具循环 Agent**：模型是决策者，代码只是执行环境。
 
@@ -48,7 +48,7 @@ Claude Code 的开源快照有 50 万行 TypeScript：66+ 工具、React/Ink TUI
 
 **System Prompt**：每次 API 调用前组装的第一条消息，告诉模型当前操作系统、工作目录、Git 状态、项目规则（CLAUDE.md）、可用工具列表。这些上下文直接影响模型的决策质量。
 
-**权限与安全**：能执行任意 Shell 命令的 Agent 需要安全控制。我们实现了 5 种权限模式，从"全部放行"到"全部询问用户"——写文件前检查是否允许，危险操作需要确认。
+**权限与安全**：能执行任意 Shell 命令的 Agent 需要安全控制。我们实现了 5 种权限模式，从“全部放行”到“全部询问用户”——写文件前检查是否允许，危险操作需要确认。
 
 ## 架构全景
 
@@ -57,9 +57,7 @@ graph TB
     User[用户输入] --> CLI[cli.ts<br/>CLI 入口 / REPL]
     CLI --> Agent[agent.ts<br/>Agent 主循环]
     Agent --> Prompt[prompt.ts<br/>System Prompt]
-    Agent --> API{API 后端}
-    API -->|Anthropic| AnthropicSDK[Anthropic SDK]
-    API -->|OpenAI 兼容| OpenAISDK[OpenAI SDK]
+    Agent --> AnthropicSDK[Anthropic SDK]
     Agent --> Tools[tools.ts<br/>工具系统]
     Tools --> FS[文件读写]
     Tools --> Shell[Shell 命令]
@@ -90,7 +88,7 @@ graph TB
 各组件职责：
 
 - **`cli.ts`**：解析命令行参数，提供交互式 REPL
-- **`agent.ts`**：核心引擎（~1263 行）。组装消息、调用 API、解析响应、执行工具、压缩上下文、控制预算
+- **`agent.ts`**：核心引擎（~1081 行）。组装消息、调用 API、解析响应、执行工具、压缩上下文、控制预算
 - **`prompt.ts`**：把静态提示词模板和动态环境信息（OS、目录、Git 状态、记忆、技能）拼成 System Prompt
 - **`tools.ts`**：13 个工具的定义 + 执行逻辑 + 权限检查 + 延迟加载
 - **`memory.ts` / `skills.ts`**：记忆让 Agent 跨会话记住信息（支持语义召回），技能提供可复用的操作序列，两者都在启动时注入 System Prompt
@@ -101,49 +99,32 @@ graph TB
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| `agent.ts` | ~1263 | Agent 主循环：消息构造、API 调用、工具编排、流式执行、子 Agent、4 层压缩、预算控制、Plan Mode |
-| `tools.ts` | ~850 | 工具定义 + 执行：13 个工具 + 5 种权限模式 + mtime 防护 + 延迟加载 |
-| `cli.ts` | ~371 | CLI 入口、参数解析、REPL 交互 |
-| `memory.ts` | ~325 | 记忆系统：4 类型 + 文件存储 + 语义召回 + 异步预取 |
+| `agent.ts` | ~1081 | Agent 主循环：消息构造、API 调用、工具编排、流式执行、子 Agent、4 层压缩、预算控制、Plan Mode |
+| `tools.ts` | ~858 | 工具定义 + 执行：13 个工具 + 5 种权限模式 + mtime 防护 + 延迟加载 |
+| `cli.ts` | ~340 | CLI 入口、参数解析、REPL 交互 |
+| `memory.ts` | ~392 | 记忆系统：4 类型 + 文件存储 + 语义召回 + 异步预取 |
 | `mcp.ts` | ~266 | MCP 客户端：JSON-RPC over stdio、工具发现与调用转发 |
 | `ui.ts` | ~211 | 终端输出：颜色、格式化 |
-| `skills.ts` | ~175 | 技能系统：目录发现 + frontmatter 解析 + inline/fork 双模式 |
 | `subagent.ts` | ~199 | 子 Agent 配置（3 内置 + 自定义 Agent 发现） |
-| `prompt.ts` | ~154 | System Prompt 构造：模板 + @include + 变量替换 + 记忆/技能注入 |
-| `session.ts` | ~63 | 会话持久化：JSON 文件存储 |
+| `skills.ts` | ~175 | 技能系统：目录发现 + frontmatter 解析 + inline/fork 双模式 |
+| `prompt.ts` | ~230 | System Prompt 构造：模板 + @include + 变量替换 + 记忆/技能注入 |
+| `session.ts` | ~62 | 会话持久化：JSON 文件存储 |
 | `frontmatter.ts` | ~41 | YAML frontmatter 解析器 |
-| `python/` | — | Python 版完整实现（`mini_claude/` 包，~2920 行） |
 
 ## 技术栈
 
-TypeScript 和 Python 两个版本分别实现，选你熟悉的看就行。
-
-<!-- tabs:start -->
-#### **TypeScript**
+用 TypeScript 实现，与 Claude Code 同语言，便于对照源码阅读。
 
 ```
 TypeScript           — 类型安全，与 Claude Code 同语言
 @anthropic-ai/sdk    — Anthropic 官方 SDK
-openai               — OpenAI 兼容后端支持
 chalk                — 终端颜色输出
 glob                 — 文件模式匹配
 ```
 
-#### **Python**
-
-```
-Python 3.11+         — 简洁易读
-anthropic            — Anthropic 官方 SDK
-openai               — OpenAI 兼容后端支持
-```
-<!-- tabs:end -->
-
 没有框架、没有构建工具链，只有最基础的依赖。
 
 ## 快速开始
-
-<!-- tabs:start -->
-#### **TypeScript**
 
 ```bash
 git clone https://github.com/Windy3f3f3f3f/claude-code-from-scratch.git
@@ -152,17 +133,6 @@ npm install
 export ANTHROPIC_API_KEY=sk-ant-xxx
 npm run dev
 ```
-
-#### **Python**
-
-```bash
-git clone https://github.com/Windy3f3f3f3f/claude-code-from-scratch.git
-cd claude-code-from-scratch/python
-pip install -e .
-export ANTHROPIC_API_KEY=sk-ant-xxx
-mini-claude-py "hello"
-```
-<!-- tabs:end -->
 
 启动后：
 
@@ -198,7 +168,7 @@ mini-claude --max-cost 0.50 --max-turns 20  # 预算控制
 | [2. 工具系统](docs/02-tools.md) | `tools.ts` | `src/Tool.ts` + `src/tools/` (66+ 工具) |
 | [3. System Prompt](docs/03-system-prompt.md) | `prompt.ts` | `src/constants/prompts.ts` |
 | [4. CLI 与会话](docs/04-cli-session.md) | `cli.ts` + `session.ts` | `src/entrypoints/cli.tsx` |
-| [5. 流式输出](docs/05-streaming.md) | `agent.ts` 的两套 stream 方法 | `src/services/api/claude.ts` |
+| [5. 流式输出](docs/05-streaming.md) | `agent.ts` 的 stream 方法 | `src/services/api/claude.ts` |
 | [6. 权限与安全](docs/06-permissions.md) | `tools.ts` 的 `checkPermission()` + 规则配置 | `src/utils/permissions/` (52KB) |
 | [7. 上下文管理](docs/07-context.md) | `agent.ts` 的 `checkAndCompact()` | `src/services/compact/` |
 | **Phase 2: 进阶能力** | | |

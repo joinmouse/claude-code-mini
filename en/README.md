@@ -1,71 +1,63 @@
 # Claude Code From Scratch
 
-**Build Claude Code from scratch, step by step**
+> 🍴 This project is forked from [Windy3f3f3f3f/claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) and streamlined to a pure TypeScript + Anthropic single version. Full credit to the original author for the excellent tutorial.
 
-[![GitHub stars](https://img.shields.io/github/stars/Windy3f3f3f3f/claude-code-from-scratch?style=flat-square&logo=github)](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](#)
-[![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)](#)
-[![Lines of Code](https://img.shields.io/badge/~4300_lines-minimal-green?style=flat-square)](#)
+[![GitHub stars](https://img.shields.io/github/stars/joinmouse/claude-code-mini?style=social)](https://github.com/joinmouse/claude-code-mini)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](#)
+[![Lines of Code](https://img.shields.io/badge/~3400_lines-minimal-green)](#)
 
-> **Want to understand the internals?** Companion project **[How Claude Code Works](https://windy3f3f3f3f.github.io/how-claude-code-works/#/en/)** — 12 deep-dive articles, 330K+ characters, source-level analysis of Claude Code's architecture
+> Build Claude Code from scratch, step by step
+
+<p align="center">
+  <a href="https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/"><strong>📘 Read Tutorial Online →</strong></a>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  <a href="../README.md">中文</a>
+</p>
+
+> 📖 **Want to understand the internals?** Companion project **[How Claude Code Works](https://github.com/Windy3f3f3f3f/how-claude-code-works)** — 12 deep-dive articles, 330K+ characters, source-level analysis of Claude Code's architecture
 
 ---
 
 **Claude Code open-sourced 500K lines of TypeScript. Too much to read?**
 
-This project recreates Claude Code's core architecture in **~4300 lines** (TypeScript and Python implementations) — Agent Loop, 13 tools (with parallel + streaming execution), 4-tier context compression, semantic memory recall, skills, multi-agent, MCP integration — with each step comparing the real source to our simplified version.
+This project recreates Claude Code's core architecture in **~3400 lines of TypeScript** — Agent Loop, 13 tools (with parallel + streaming execution), 4-tier context compression, semantic memory recall, skills, multi-agent, MCP integration — with each step comparing the real source to our simplified version.
 
 This isn't a demo — it's a **step-by-step tutorial**. Follow along, write a few thousand lines of code yourself, and quickly grasp the essence of the best coding agent out there. No need to wade through hundreds of thousands of lines.
 
 ## Step-by-Step Tutorial
 
-14 chapters in two phases — first build a working Coding Agent, then add advanced capabilities. Each chapter includes real code + Claude Code source comparison:
+13 chapters in two phases — first build a working Coding Agent, then add advanced capabilities. Each chapter includes real code + Claude Code source comparison:
 
 | Chapter | Content | Source Mapping |
 |---------|---------|---------------|
 | **Phase 1: Build a Working Coding Agent** | | |
-| [1. Agent Loop](/en/docs/01-agent-loop) | Core loop: call LLM → execute tools → repeat | `agent.ts` ↔ `query.ts` |
-| [2. Tool System](/en/docs/02-tools) | 13 tools + mtime guard + deferred loading | `tools.ts` ↔ `Tool.ts` + 66 tools |
-| [3. System Prompt](/en/docs/03-system-prompt) | Prompt engineering + @include syntax | `prompt.ts` ↔ `prompts.ts` |
-| [4. CLI & Sessions](/en/docs/04-cli-session) | REPL, Ctrl+C, session persistence | `cli.ts` ↔ `cli.tsx` |
-| [5. Streaming](/en/docs/05-streaming) | Dual-backend + streaming tool exec + parallel | `agent.ts` ↔ `api/claude.ts` |
-| [6. Permissions](/en/docs/06-permissions) | 5 modes + declarative rules + danger detection | `tools.ts` ↔ `permissions/` (52KB) |
-| [7. Context](/en/docs/07-context) | 4-tier compression + large result persistence | `agent.ts` ↔ `compact/` |
+| [1. Agent Loop](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/01-agent-loop) | Core loop: call LLM → execute tools → repeat | `agent.ts` ↔ `query.ts` |
+| [2. Tool System](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/02-tools) | 13 tools + mtime guard + deferred loading | `tools.ts` ↔ `Tool.ts` + 66 tools |
+| [3. System Prompt](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/03-system-prompt) | Prompt engineering + @include syntax | `prompt.ts` ↔ `prompts.ts` |
+| [4. CLI & Sessions](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/04-cli-session) | REPL, Ctrl+C, session persistence | `cli.ts` ↔ `cli.tsx` |
+| [5. Streaming](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/05-streaming) | Anthropic streaming + streaming tool exec + parallel | `agent.ts` ↔ `api/claude.ts` |
+| [6. Permissions](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/06-permissions) | 5 modes + declarative rules + danger detection | `tools.ts` ↔ `permissions/` (52KB) |
+| [7. Context](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/07-context) | 4-tier compression + large result persistence | `agent.ts` ↔ `compact/` |
 | **Phase 2: Advanced Capabilities** | | |
-| [8. Memory](/en/docs/08-memory) | 4-type memory + semantic recall + async prefetch | `memory.ts` ↔ `memory.ts` |
-| [9. Skills](/en/docs/09-skills) | Skill discovery + inline/fork dual mode | `skills.ts` ↔ `SkillTool/` |
-| [10. Plan Mode](/en/docs/10-plan-mode) | Read-only planning + 4-option approval workflow | `agent.ts` ↔ `EnterPlanMode` |
-| [11. Multi-Agent](/en/docs/11-multi-agent) | Sub-Agent fork-return architecture | `subagent.ts` ↔ `AgentTool/` |
-| [12. MCP Integration](/en/docs/12-mcp) | JSON-RPC over stdio for external tools | `mcp.ts` ↔ `mcpClient.ts` |
-| **Summary** | | |
-| [13. Architecture Comparison](/en/docs/13-whats-next) | Full comparison + extension ideas | Global |
-| [14. Testing Guide](/en/docs/14-testing) | 19 manual tests covering all features | `test/` |
+| [8. Memory](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/08-memory) | 4-type memory + semantic recall + async prefetch | `memory.ts` ↔ `memory.ts` |
+| [9. Skills](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/09-skills) | Skill discovery + inline/fork dual mode | `skills.ts` ↔ `SkillTool/` |
+| [10. Plan Mode](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/10-plan-mode) | Read-only planning + 4-option approval workflow | `agent.ts` ↔ `EnterPlanMode` |
+| [11. Multi-Agent](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/11-multi-agent) | Sub-Agent fork-return architecture | `subagent.ts` ↔ `AgentTool/` |
+| [12. MCP Integration](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/12-mcp) | JSON-RPC over stdio for external tools | `mcp.ts` ↔ `mcpClient.ts` |
+| [13. Comparison](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/13-whats-next) | Full comparison + extension ideas | Global |
 
 ## Quick Start
 
-**TypeScript**
-
 ```bash
-git clone https://github.com/Windy3f3f3f3f/claude-code-from-scratch.git
-cd claude-code-from-scratch
+git clone https://github.com/joinmouse/claude-code-mini.git
+cd claude-code-mini
 npm install && npm run build
-```
-
-**Python** (requires Python 3.11+, [details](./python/README.md))
-
-```bash
-cd python
-pip install -e .
-mini-claude-py          # CLI entry (avoids conflict with TS version)
-python -m mini_claude   # Or use python -m
 ```
 
 ### API Configuration
 
-Two backends supported, auto-detected via environment variables (custom base URL supported):
-
-**Option 1: Anthropic Format (Recommended)**
+Uses the Anthropic API. Configure via environment variable:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-xxx"
@@ -73,23 +65,13 @@ export ANTHROPIC_API_KEY="sk-ant-xxx"
 export ANTHROPIC_BASE_URL="https://aihubmix.com"
 ```
 
-**Option 2: OpenAI-Compatible Format**
-
-```bash
-export OPENAI_API_KEY="sk-xxx"
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-```
-
 Default model is `claude-opus-4-6`. Customize via env var or CLI flag:
 
 ```bash
 export MINI_CLAUDE_MODEL="claude-sonnet-4-6"    # env var
-npm start -- --model gpt-4o                      # CLI flag (higher priority)
 ```
 
 ### Run
-
-**TypeScript**
 
 ```bash
 npm start                    # Interactive REPL mode (recommended)
@@ -102,17 +84,12 @@ npm start -- --max-cost 0.50 # Cost limit (USD)
 npm start -- --max-turns 20  # Turn limit
 ```
 
-**Python**
+Install globally to use from any directory:
 
 ```bash
-mini-claude-py               # Interactive REPL mode (recommended)
-mini-claude-py --resume      # Resume last session
-mini-claude-py --yolo        # Skip safety confirmations
-mini-claude-py --plan        # Plan mode: analyze only, no modifications
-mini-claude-py --accept-edits # Auto-approve file edits
-mini-claude-py --dont-ask    # CI mode: auto-deny confirmable actions
-mini-claude-py --max-cost 0.50 # Cost limit (USD)
-mini-claude-py --max-turns 20  # Turn limit
+npm link                     # Global install
+cd ~/your-project
+mini-claude                  # Launch directly
 ```
 
 ### REPL Commands
@@ -126,35 +103,65 @@ mini-claude-py --max-turns 20  # Turn limit
 | `/skills` | List available skills |
 | `/<skill>` | Invoke a registered skill (e.g. `/commit`) |
 
-## Architecture
+> See [CLI & Sessions](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/04-cli-session) and [Testing](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/14-testing)
+
+## Comparison with Claude Code
+
+| Aspect | Claude Code | Mini Claude Code |
+|--------|------------|-----------------|
+| Purpose | Production coding agent | Educational / minimal |
+| Tools | 66+ built-in | 13 tools (6 core + web_fetch + tool_search + skill + agent + plan mode) |
+| Tool Execution | Concurrent + streaming early start | Parallel + streaming early start |
+| Context | 4-level compression pipeline | 4-tier compression + large result persistence (>30KB) |
+| Permissions | 7-layer + AST analysis | 5 modes + declarative rules + regex detection |
+| Edit Validation | 14-step pipeline | Quote normalization + uniqueness + mtime guard + diff output |
+| Memory | 4 types + semantic recall | 4 types + semantic recall + async prefetch |
+| Skills | 6 sources + inline/fork | 2 sources + inline/fork |
+| Multi-Agent | Sub-Agent + Coordinator + Swarm | Sub-Agent (3 built-in + custom agents) |
+| MCP Integration | mcpClient.ts + dynamic tool discovery | McpManager + JSON-RPC over stdio |
+| Budget Control | USD/turns/abort | USD + turn limits |
+| Code Size | 500k+ lines | ~3400 lines |
+
+## Core Capabilities
+
+- **Agent Loop**: Automatically calls tools, processes results, iterates until done
+- **13 Tools**: Read/write/edit files (mtime guard), search, shell, WebFetch, ToolSearch (deferred loading), skills, sub-agents, Plan Mode
+- **Streaming**: Real-time output, Anthropic streaming, streaming tool early execution
+- **Parallel Tool Execution**: Read-only tools (read_file, grep_search, etc.) auto-parallelized, 2-3x speedup
+- **4-Tier Context Compression**: Budget trimming → stale snip → microcompact → auto-compact + large result persistence (>30KB to disk)
+- **Permission System**: 5 modes + declarative allow/deny rules in `.claude/settings.json` + 16 dangerous command patterns
+- **Memory System**: 4 types + semantic recall (sideQuery model selection) + async prefetch
+- **Skills System**: Load reusable prompt templates, supports inline injection and fork sub-agent execution
+- **Multi-Agent**: Sub-Agent fork-return pattern (3 built-in + `.claude/agents/` custom types)
+- **MCP Integration**: JSON-RPC over stdio to connect external tool servers, dynamic tool discovery
+- **System Prompt**: @include syntax for recursive imports, .claude/rules/ auto-loading, template variables
+- **Extended Thinking**: Anthropic extended thinking support (`--thinking`), adaptive/enabled/disabled modes
+- **Budget Control**: `--max-cost` USD limit + `--max-turns` turn limit, auto-stop on exceed
+- **Session Persistence**: Auto-save conversations, `--resume` to restore
+- **Cross-Platform**: Windows / macOS / Linux, auto-detects shell (PowerShell / bash / zsh)
+- **Error Recovery**: Exponential backoff + random jitter retry (max 3 attempts), graceful Ctrl+C
+
+## Project Structure
 
 ```
-User Input
-  │
-  ▼
-┌─────────────────────────────────────┐
-│          Agent Loop                 │
-│                                     │
-│  Messages → API (streaming) → Output│
-│       ▲                   │         │
-│       │              ┌────┴───┐     │
-│       │              │  Text  │     │
-│       │              │Tool Use│     │
-│       │              └────┬───┘     │
-│       │                   │         │
-│       │   ┌───────┐ ┌────▼───┐     │
-│       │   │Truncate│←│Execute │     │
-│       │   │ Guard  │ │ Tools  │     │
-│       │   └───────┘ └────┬───┘     │
-│       │                   │         │
-│       │   ┌───────────────▼───┐     │
-│       └───│Token Track+Compact│     │
-│           └───────────────────┘     │
-└─────────────────────────────────────┘
-  │
-  ▼
-Task Done → Auto-save Session
+src/
+├── agent.ts        # Agent loop: streaming, parallel exec, 4-tier compress  (1081 lines)
+├── tools.ts        # Tools: 13 tools + mtime guard + deferred loading       (858 lines)
+├── cli.ts          # CLI entry: args, REPL, budget flags                    (340 lines)
+├── memory.ts       # Memory: 4 types + semantic recall + async prefetch     (392 lines)
+├── mcp.ts          # MCP client: JSON-RPC over stdio                        (266 lines)
+├── prompt.ts       # System prompt: @include + template + injection         (230 lines)
+├── ui.ts           # Terminal output: colors, formatting, sub-agent         (211 lines)
+├── subagent.ts     # Sub-agent: 3 built-in + custom agent discovery         (199 lines)
+├── skills.ts       # Skills system: discovery + inline/fork modes           (175 lines)
+├── session.ts      # Session persistence: save/load/list                    (62 lines)
+├── frontmatter.ts  # Shared YAML frontmatter parser                         (41 lines)
+                                                            Total: ~3855 lines
 ```
+
+## Acknowledgements
+
+This project is forked from [Windy3f3f3f3f/claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch). The original tutorial (including the online reading site) is authored by [@Windy3f3f3f3f](https://github.com/Windy3f3f3f3f).
 
 ## Related Projects
 

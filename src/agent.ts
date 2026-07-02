@@ -1,5 +1,4 @@
 import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
 import chalk from "chalk";
 import { toolDefinitions, executeTool, checkPermission, CONCURRENCY_SAFE_TOOLS, getActiveToolDefinitions, getDeferredToolNames, type ToolDef, type PermissionMode } from "./tools.js";
 import {
@@ -68,8 +67,6 @@ const MODEL_CONTEXT: Record<string, number> = {
   "claude-sonnet-4-20250514": 200000,
   "claude-haiku-4-5-20251001": 200000,
   "claude-opus-4-20250514": 200000,
-  "gpt-4o": 128000,
-  "gpt-4o-mini": 128000,
 };
 
 function getContextWindow(model: string): number {
@@ -101,18 +98,6 @@ function getMaxOutputTokens(model: string): number {
   return 16384; // safe default for unknown models
 }
 
-// ─── Convert tools to OpenAI format ─────────────────────────
-
-function toOpenAITools(tools: ToolDef[]): OpenAI.ChatCompletionTool[] {
-  return tools.map((t) => ({
-    type: "function" as const,
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.input_schema as Record<string, unknown>,
-    },
-  }));
-}
 
 // ─── Multi-tier compression constants ────────────────────────
 // Mirrors Claude Code's 4-layer compression: budget → snip → microcompact → auto-compact
@@ -129,8 +114,7 @@ interface AgentOptions {
   permissionMode?: PermissionMode;
   yolo?: boolean;             // Legacy alias for bypassPermissions
   model?: string;
-  apiBase?: string;           // OpenAI-compatible base URL
-  anthropicBaseURL?: string;  // Anthropic base URL (e.g. proxy)
+  baseURL?: string;           // Anthropic base URL (e.g. proxy)
   apiKey?: string;
   thinking?: boolean;
   maxCostUsd?: number;        // Budget: max USD spend
@@ -143,9 +127,7 @@ interface AgentOptions {
 }
 
 export class Agent {
-  private anthropicClient?: Anthropic;
-  private openaiClient?: OpenAI;
-  private useOpenAI: boolean;
+  private anthropicClient: Anthropic;
   private permissionMode: PermissionMode;
   private thinking: boolean;
   private thinkingMode: "adaptive" | "enabled" | "disabled";
@@ -203,9 +185,8 @@ export class Agent {
   private alreadySurfacedMemories: Set<string> = new Set();
   private sessionMemoryBytes = 0;
 
-  // Separate message histories for each backend
+  // Separate message history
   private anthropicMessages: Anthropic.MessageParam[] = [];
-  private openaiMessages: OpenAI.ChatCompletionMessageParam[] = [];
 
   constructor(options: AgentOptions = {}) {
     // Permission mode: explicit mode > yolo legacy > default
@@ -214,7 +195,6 @@ export class Agent {
     this.thinking = options.thinking || false;
     this.model = options.model || "claude-opus-4-6";
     this.thinkingMode = this.resolveThinkingMode();
-    this.useOpenAI = !!options.apiBase;
     this.isSubAgent = options.isSubAgent || false;
     this.tools = options.customTools || toolDefinitions;
     this.maxCostUsd = options.maxCostUsd;
@@ -233,18 +213,10 @@ export class Agent {
       this.systemPrompt = this.baseSystemPrompt;
     }
 
-    if (this.useOpenAI) {
-      this.openaiClient = new OpenAI({
-        baseURL: options.apiBase,
-        apiKey: options.apiKey,
-      });
-      this.openaiMessages.push({ role: "system", content: this.systemPrompt });
-    } else {
-      this.anthropicClient = new Anthropic({
-        apiKey: options.apiKey,
-        ...(options.anthropicBaseURL ? { baseURL: options.anthropicBaseURL } : {}),
-      });
-    }
+    this.anthropicClient = new Anthropic({
+      apiKey: options.apiKey,
+      ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+    });
   }
 
   private resolveThinkingMode(): "adaptive" | "enabled" | "disabled" {
@@ -254,36 +226,19 @@ export class Agent {
     return "enabled";
   }
 
-  /** Build a sideQuery function for memory recall, works with both backends. */
-  private buildSideQuery(): SideQueryFn | null {
-    if (this.anthropicClient) {
-      const client = this.anthropicClient;
-      const model = this.model;
-      return async (system, userMessage, signal) => {
-        const resp = await client.messages.create({
-          model, max_tokens: 256, system,
-          messages: [{ role: "user", content: userMessage }],
-        }, { signal });
-        return resp.content
-          .filter((b): b is Anthropic.TextBlock => b.type === "text")
-          .map((b) => b.text).join("");
-      };
-    }
-    if (this.openaiClient) {
-      const client = this.openaiClient;
-      const model = this.model;
-      return async (system, userMessage, _signal) => {
-        const resp = await client.chat.completions.create({
-          model, max_tokens: 256,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: userMessage },
-          ],
-        });
-        return resp.choices?.[0]?.message?.content || "";
-      };
-    }
-    return null;
+  /** Build a sideQuery function for memory recall. */
+  private buildSideQuery(): SideQueryFn {
+    const client = this.anthropicClient;
+    const model = this.model;
+    return async (system, userMessage, signal) => {
+      const resp = await client.messages.create({
+        model, max_tokens: 256, system,
+        messages: [{ role: "user", content: userMessage }],
+      }, { signal });
+      return resp.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text).join("");
+    };
   }
 
   abort() {
@@ -313,9 +268,6 @@ export class Agent {
       this.prePlanMode = null;
       this.planFilePath = null;
       this.systemPrompt = this.baseSystemPrompt;
-      if (this.useOpenAI && this.openaiMessages.length > 0) {
-        (this.openaiMessages[0] as any).content = this.systemPrompt;
-      }
       printInfo(`Exited plan mode → ${this.permissionMode} mode`);
       return this.permissionMode;
     } else {
@@ -324,9 +276,6 @@ export class Agent {
       this.permissionMode = "plan";
       this.planFilePath = this.generatePlanFilePath();
       this.systemPrompt = this.baseSystemPrompt + this.buildPlanModePrompt();
-      if (this.useOpenAI && this.openaiMessages.length > 0) {
-        (this.openaiMessages[0] as any).content = this.systemPrompt;
-      }
       printInfo(`Entered plan mode. Plan file: ${this.planFilePath}`);
       return "plan";
     }
@@ -356,11 +305,7 @@ export class Agent {
     }
     this.abortController = new AbortController();
     try {
-      if (this.useOpenAI) {
-        await this.chatOpenAI(userMessage);
-      } else {
-        await this.chatAnthropic(userMessage);
-      }
+      await this.chatAnthropic(userMessage);
     } finally {
       this.abortController = null;
     }
@@ -402,10 +347,6 @@ export class Agent {
 
   clearHistory() {
     this.anthropicMessages = [];
-    this.openaiMessages = [];
-    if (this.useOpenAI) {
-      this.openaiMessages.push({ role: "system", content: this.systemPrompt });
-    }
     this.totalInputTokens = 0;
     this.totalOutputTokens = 0;
     this.lastInputTokenCount = 0;
@@ -445,14 +386,13 @@ export class Agent {
 
   // ─── Session restore ───────────────────────────────────────
 
-  restoreSession(data: { anthropicMessages?: any[]; openaiMessages?: any[] }) {
+  restoreSession(data: { anthropicMessages?: any[] }) {
     if (data.anthropicMessages) this.anthropicMessages = data.anthropicMessages;
-    if (data.openaiMessages) this.openaiMessages = data.openaiMessages;
-    printInfo(`Session restored (${this.getMessageCount()} messages).`);
+    printInfo(`Session restored (${this.anthropicMessages.length} messages).`);
   }
 
   private getMessageCount(): number {
-    return this.useOpenAI ? this.openaiMessages.length : this.anthropicMessages.length;
+    return this.anthropicMessages.length;
   }
 
   private autoSave() {
@@ -463,10 +403,9 @@ export class Agent {
           model: this.model,
           cwd: process.cwd(),
           startTime: this.sessionStartTime,
-          messageCount: this.getMessageCount(),
+          messageCount: this.anthropicMessages.length,
         },
-        anthropicMessages: this.useOpenAI ? undefined : this.anthropicMessages,
-        openaiMessages: this.useOpenAI ? this.openaiMessages : undefined,
+        anthropicMessages: this.anthropicMessages,
       });
     } catch {}
   }
@@ -481,11 +420,7 @@ export class Agent {
   }
 
   private async compactConversation(): Promise<void> {
-    if (this.useOpenAI) {
-      await this.compactOpenAI();
-    } else {
-      await this.compactAnthropic();
-    }
+    await this.compactAnthropic();
     printInfo("Conversation compacted.");
   }
 
@@ -503,7 +438,7 @@ export class Agent {
           "Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work.",
       },
     ];
-    const summaryResp = await this.anthropicClient!.messages.create({
+    const summaryResp = await this.anthropicClient.messages.create({
       model: this.model,
       max_tokens: 2048,
       system: "You are a conversation summarizer. Be concise but preserve important details.",
@@ -524,51 +459,18 @@ export class Agent {
     this.lastInputTokenCount = 0;
   }
 
-  private async compactOpenAI(): Promise<void> {
-    // Invariant: caller must ensure the last message is a plain user-text
-    // message (not a `tool` role result). Same reasoning as compactAnthropic
-    // — slicing off a tool result would orphan the preceding assistant's
-    // tool_calls.
-    if (this.openaiMessages.length < 5) return;
-    const systemMsg = this.openaiMessages[0];
-    const lastUserMsg = this.openaiMessages[this.openaiMessages.length - 1];
-    const summaryResp = await this.openaiClient!.chat.completions.create({
-      model: this.model,
-      max_tokens: 2048,
-      messages: [
-        { role: "system", content: "You are a conversation summarizer. Be concise but preserve important details." },
-        ...this.openaiMessages.slice(1, -1),
-        { role: "user", content: "Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work." },
-      ],
-    });
-    const summaryText = summaryResp.choices[0]?.message?.content || "No summary available.";
-    this.openaiMessages = [
-      systemMsg,
-      { role: "user", content: `[Previous conversation summary]\n${summaryText}` },
-      { role: "assistant", content: "Understood. I have the context from our previous conversation. How can I continue helping?" },
-    ];
-    if ((lastUserMsg as any).role === "user") this.openaiMessages.push(lastUserMsg);
-    this.lastInputTokenCount = 0;
-  }
-
   // ─── Multi-tier compression pipeline ──────────────────────
   // Mirrors Claude Code's 4-layer: budget → snip → microcompact → auto-compact
   // Tiers 1-3 are zero-API-cost, operating on the local message array.
 
   private runCompressionPipeline(): void {
-    if (this.useOpenAI) {
-      this.budgetToolResultsOpenAI();
-      this.snipStaleResultsOpenAI();
-      this.microcompactOpenAI();
-    } else {
-      this.budgetToolResultsAnthropic();
-      this.snipStaleResultsAnthropic();
-      this.microcompactAnthropic();
-    }
+    this.budgetToolResults();
+    this.snipStaleResults();
+    this.microcompact();
   }
 
   // Tier 1: Budget tool results — dynamically shrink large results as context fills
-  private budgetToolResultsAnthropic(): void {
+  private budgetToolResults(): void {
     const utilization = this.lastInputTokenCount / this.effectiveWindow;
     if (utilization < 0.5) return;
     const budget = utilization > 0.7 ? 15000 : 30000;
@@ -587,26 +489,10 @@ export class Agent {
     }
   }
 
-  private budgetToolResultsOpenAI(): void {
-    const utilization = this.lastInputTokenCount / this.effectiveWindow;
-    if (utilization < 0.5) return;
-    const budget = utilization > 0.7 ? 15000 : 30000;
 
-    for (const msg of this.openaiMessages) {
-      if ((msg as any).role === "tool" && typeof (msg as any).content === "string") {
-        const content = (msg as any).content as string;
-        if (content.length > budget) {
-          const keepEach = Math.floor((budget - 80) / 2);
-          (msg as any).content = content.slice(0, keepEach) +
-            `\n\n[... budgeted: ${content.length - keepEach * 2} chars truncated ...]\n\n` +
-            content.slice(-keepEach);
-        }
-      }
-    }
-  }
 
   // Tier 2: Snip stale results — replace old/duplicate tool results with placeholder
-  private snipStaleResultsAnthropic(): void {
+  private snipStaleResults(): void {
     const utilization = this.lastInputTokenCount / this.effectiveWindow;
     if (utilization < SNIP_THRESHOLD) return;
 
@@ -661,30 +547,10 @@ export class Agent {
     }
   }
 
-  private snipStaleResultsOpenAI(): void {
-    const utilization = this.lastInputTokenCount / this.effectiveWindow;
-    if (utilization < SNIP_THRESHOLD) return;
 
-    // Collect tool messages
-    const toolMsgs: { idx: number; toolCallId: string }[] = [];
-    for (let i = 0; i < this.openaiMessages.length; i++) {
-      const msg = this.openaiMessages[i] as any;
-      if (msg.role === "tool" && typeof msg.content === "string" && msg.content !== SNIP_PLACEHOLDER) {
-        toolMsgs.push({ idx: i, toolCallId: msg.tool_call_id });
-      }
-    }
-
-    if (toolMsgs.length <= KEEP_RECENT_RESULTS) return;
-
-    // Snip all but the most recent N
-    const snipCount = toolMsgs.length - KEEP_RECENT_RESULTS;
-    for (let i = 0; i < snipCount; i++) {
-      (this.openaiMessages[toolMsgs[i].idx] as any).content = SNIP_PLACEHOLDER;
-    }
-  }
 
   // Tier 3: Microcompact — aggressively clear old results when prompt cache is cold
-  private microcompactAnthropic(): void {
+  private microcompact(): void {
     if (!this.lastApiCallTime || (Date.now() - this.lastApiCallTime) < MICROCOMPACT_IDLE_MS) return;
 
     // Collect ALL tool_results across messages, clear all but recent N
@@ -708,23 +574,7 @@ export class Agent {
     }
   }
 
-  private microcompactOpenAI(): void {
-    if (!this.lastApiCallTime || (Date.now() - this.lastApiCallTime) < MICROCOMPACT_IDLE_MS) return;
 
-    const toolMsgs: number[] = [];
-    for (let i = 0; i < this.openaiMessages.length; i++) {
-      const msg = this.openaiMessages[i] as any;
-      if (msg.role === "tool" && typeof msg.content === "string" &&
-          msg.content !== SNIP_PLACEHOLDER && msg.content !== "[Old result cleared]") {
-        toolMsgs.push(i);
-      }
-    }
-
-    const clearCount = toolMsgs.length - KEEP_RECENT_RESULTS;
-    for (let i = 0; i < clearCount && i < toolMsgs.length; i++) {
-      (this.openaiMessages[toolMsgs[i]] as any).content = "[Old result cleared]";
-    }
-  }
 
   // Helper: find a tool_use block by its ID in assistant messages
   private findToolUseById(toolUseId: string): { name: string; input: any } | null {
@@ -791,7 +641,6 @@ export class Agent {
       printSubAgentStart("skill-fork", input.skill_name);
       const subAgent = new Agent({
         model: this.model,
-        apiBase: this.useOpenAI ? this.openaiClient?.baseURL : undefined,
         customSystemPrompt: result.prompt,
         customTools: tools,
         isSubAgent: true,
@@ -853,9 +702,6 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
       this.permissionMode = "plan";
       this.planFilePath = this.generatePlanFilePath();
       this.systemPrompt = this.baseSystemPrompt + this.buildPlanModePrompt();
-      if (this.useOpenAI && this.openaiMessages.length > 0) {
-        (this.openaiMessages[0] as any).content = this.systemPrompt;
-      }
       printInfo("Entered plan mode (read-only). Plan file: " + this.planFilePath);
       return `Entered plan mode. You are now in read-only mode.\n\nYour plan file: ${this.planFilePath}\nWrite your plan to this file. This is the only file you can edit.\n\nWhen your plan is complete, call exit_plan_mode.`;
     }
@@ -897,11 +743,6 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
         const savedPlanPath = this.planFilePath;
         this.planFilePath = null;
         this.systemPrompt = this.baseSystemPrompt;
-        if (this.useOpenAI && this.openaiMessages.length > 0) {
-          (this.openaiMessages[0] as any).content = this.systemPrompt;
-        }
-
-        // Clear context if requested
         if (result.choice === "clear-and-execute") {
           this.clearHistoryKeepSystem();
           this.contextCleared = true; // Signal the agent loop to inject plan as user message
@@ -918,9 +759,6 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
       this.prePlanMode = null;
       this.planFilePath = null;
       this.systemPrompt = this.baseSystemPrompt;
-      if (this.useOpenAI && this.openaiMessages.length > 0) {
-        (this.openaiMessages[0] as any).content = this.systemPrompt;
-      }
       printInfo("Exited plan mode. Restored to " + this.permissionMode + " mode.");
       return `Exited plan mode. Permission mode restored to: ${this.permissionMode}\n\n## Your Plan:\n${planContent}`;
     }
@@ -931,10 +769,6 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
   /** Clear history but keep system prompt intact (used for clear-context plan approval) */
   private clearHistoryKeepSystem() {
     this.anthropicMessages = [];
-    this.openaiMessages = [];
-    if (this.useOpenAI) {
-      this.openaiMessages.push({ role: "system", content: this.systemPrompt });
-    }
     this.lastInputTokenCount = 0;
   }
 
@@ -948,10 +782,6 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
     const config = getSubAgentConfig(type);
     const subAgent = new Agent({
       model: this.model,
-      apiKey: this.anthropicClient
-        ? undefined  // Anthropic SDK reads from env
-        : undefined,
-      apiBase: this.useOpenAI ? this.openaiClient?.baseURL : undefined,
       customSystemPrompt: config.systemPrompt,
       customTools: config.tools,
       isSubAgent: true,
@@ -984,13 +814,11 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
     let memoryPrefetch: MemoryPrefetch | null = null;
     if (!this.isSubAgent) {
       const sq = this.buildSideQuery();
-      if (sq) {
-        memoryPrefetch = startMemoryPrefetch(
-          userMessage, sq,
-          this.alreadySurfacedMemories, this.sessionMemoryBytes,
-          this.abortController?.signal,
-        );
-      }
+      memoryPrefetch = startMemoryPrefetch(
+        userMessage, sq,
+        this.alreadySurfacedMemories, this.sessionMemoryBytes,
+        this.abortController?.signal,
+      );
     }
 
     let firstIteration = true;
@@ -1164,7 +992,7 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
         createParams.thinking = { type: "enabled", budget_tokens: maxOutput - 1 };
       }
 
-      const stream = this.anthropicClient!.messages.stream(createParams, { signal });
+      const stream = this.anthropicClient.messages.stream(createParams, { signal });
 
       // Stream text content (SDK high-level event)
       let firstText = true;
@@ -1225,265 +1053,6 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
       );
 
       return finalMessage;
-    }, this.abortController?.signal);
-  }
-
-  // ─── OpenAI-compatible backend ───────────────────────────────
-
-  private async chatOpenAI(userMessage: string): Promise<void> {
-    this.openaiMessages.push({ role: "user", content: userMessage });
-    // Auto-compact at turn boundary only — see chatAnthropic for rationale.
-    // The last message is now plain user text, so the slice in compactOpenAI
-    // won't orphan a tool_calls / tool message pair.
-    await this.checkAndCompact();
-
-    // Start async memory prefetch (non-blocking, fires once per user turn)
-    let memoryPrefetch: MemoryPrefetch | null = null;
-    if (!this.isSubAgent) {
-      const sq = this.buildSideQuery();
-      if (sq) {
-        memoryPrefetch = startMemoryPrefetch(
-          userMessage, sq,
-          this.alreadySurfacedMemories, this.sessionMemoryBytes,
-        );
-      }
-    }
-
-    while (true) {
-      if (this.abortController?.signal.aborted) break;
-
-      // Run compression pipeline before API call
-      this.runCompressionPipeline();
-
-      // Consume memory prefetch if settled (non-blocking poll, zero-wait)
-      if (memoryPrefetch && memoryPrefetch.settled && !memoryPrefetch.consumed) {
-        memoryPrefetch.consumed = true;
-        try {
-          const memories = await memoryPrefetch.promise;
-          if (memories.length > 0) {
-            const injectionText = formatMemoriesForInjection(memories);
-            const last = this.openaiMessages[this.openaiMessages.length - 1];
-            if (last && last.role === "user") {
-              last.content = (last.content || "") + "\n\n" + injectionText;
-            } else {
-              this.openaiMessages.push({ role: "user", content: injectionText });
-            }
-            for (const m of memories) {
-              this.alreadySurfacedMemories.add(m.path);
-              this.sessionMemoryBytes += Buffer.byteLength(m.content);
-            }
-          }
-        } catch { /* prefetch errors already logged */ }
-      }
-
-      if (!this.isSubAgent) startSpinner();
-      const response = await this.callOpenAIStream();
-      if (!this.isSubAgent) stopSpinner();
-      this.lastApiCallTime = Date.now();
-
-      // Track tokens
-      if (response.usage) {
-        this.totalInputTokens += response.usage.prompt_tokens;
-        this.totalOutputTokens += response.usage.completion_tokens;
-        this.lastInputTokenCount = response.usage.prompt_tokens;
-      }
-
-      const choice = response.choices?.[0];
-      if (!choice) break;
-      const message = choice.message;
-
-      // Add assistant message to history
-      this.openaiMessages.push(message);
-
-      // If no tool calls, we're done
-      const toolCalls = message.tool_calls;
-      if (!toolCalls || toolCalls.length === 0) {
-        if (!this.isSubAgent) {
-          printCost(this.totalInputTokens, this.totalOutputTokens);
-        }
-        break;
-      }
-
-      // Budget check after each turn
-      this.currentTurns++;
-      const budget = this.checkBudget();
-      if (budget.exceeded) {
-        printInfo(`Budget exceeded: ${budget.reason}`);
-        break;
-      }
-
-      // Phase 1: Parse & permission-check all tool calls (serial — user interaction)
-      type OAIChecked = { tc: typeof toolCalls[0]; fnName: string; input: Record<string, any>; allowed: boolean; result?: string };
-      const oaiChecked: OAIChecked[] = [];
-      for (const tc of toolCalls) {
-        if (this.abortController?.signal.aborted) break;
-        if (tc.type !== "function") continue;
-        const fnName = tc.function.name;
-        let input: Record<string, any>;
-        try { input = JSON.parse(tc.function.arguments); } catch { input = {}; }
-
-        printToolCall(fnName, input);
-
-        const perm = checkPermission(fnName, input, this.permissionMode, this.planFilePath || undefined);
-        if (perm.action === "deny") {
-          printInfo(`Denied: ${perm.message}`);
-          oaiChecked.push({ tc, fnName, input, allowed: false, result: `Action denied: ${perm.message}` });
-          continue;
-        }
-        if (perm.action === "confirm" && perm.message && !this.confirmedPaths.has(perm.message)) {
-          const confirmed = await this.confirmDangerous(perm.message);
-          if (!confirmed) {
-            oaiChecked.push({ tc, fnName, input, allowed: false, result: "User denied this action." });
-            continue;
-          }
-          this.confirmedPaths.add(perm.message);
-        }
-        oaiChecked.push({ tc, fnName, input, allowed: true });
-      }
-
-      // Phase 2: Group & execute (parallel for consecutive safe tools)
-      type OAIBatch = { concurrent: boolean; items: OAIChecked[] };
-      const oaiBatches: OAIBatch[] = [];
-      for (const ct of oaiChecked) {
-        const safe = ct.allowed && CONCURRENCY_SAFE_TOOLS.has(ct.fnName);
-        if (safe && oaiBatches.length > 0 && oaiBatches[oaiBatches.length - 1].concurrent) {
-          oaiBatches[oaiBatches.length - 1].items.push(ct);
-        } else {
-          oaiBatches.push({ concurrent: safe, items: [ct] });
-        }
-      }
-
-      let oaiContextBreak = false;
-      for (const batch of oaiBatches) {
-        if (oaiContextBreak || this.abortController?.signal.aborted) break;
-
-        if (batch.concurrent) {
-          const results = await Promise.all(
-            batch.items.map(async (ct) => {
-              const raw = await this.executeToolCall(ct.fnName, ct.input);
-              const res = this.persistLargeResult(ct.fnName, raw);
-              printToolResult(ct.fnName, res);
-              return { ct, res };
-            })
-          );
-          for (const { ct, res } of results) {
-            this.openaiMessages.push({ role: "tool", tool_call_id: ct.tc.id, content: res });
-          }
-        } else {
-          for (const ct of batch.items) {
-            if (!ct.allowed) {
-              this.openaiMessages.push({ role: "tool", tool_call_id: ct.tc.id, content: ct.result! });
-              continue;
-            }
-            const raw = await this.executeToolCall(ct.fnName, ct.input);
-            const res = this.persistLargeResult(ct.fnName, raw);
-            printToolResult(ct.fnName, res);
-
-            if (this.contextCleared) {
-              this.contextCleared = false;
-              this.openaiMessages.push({ role: "user", content: res });
-              oaiContextBreak = true;
-              break;
-            }
-            this.openaiMessages.push({ role: "tool", tool_call_id: ct.tc.id, content: res });
-          }
-        }
-      }
-
-      this.contextCleared = false;
-    }
-  }
-
-  private async callOpenAIStream(): Promise<OpenAI.ChatCompletion> {
-    return withRetry(async (signal) => {
-      const stream = await this.openaiClient!.chat.completions.create({
-        model: this.model,
-        max_tokens: 16384,
-        tools: toOpenAITools(getActiveToolDefinitions(this.tools)),
-        messages: this.openaiMessages,
-        stream: true,
-        stream_options: { include_usage: true },
-      }, { signal });
-
-      // Accumulate the streamed response
-      let content = "";
-      let firstText = true;
-      const toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
-      let finishReason = "";
-      let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
-
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta;
-
-        // Usage comes in the final chunk (no delta)
-        if (chunk.usage) {
-          usage = {
-            prompt_tokens: chunk.usage.prompt_tokens,
-            completion_tokens: chunk.usage.completion_tokens,
-          };
-        }
-
-        if (!delta) continue;
-
-        // Stream text content
-        if (delta.content) {
-          if (firstText) { stopSpinner(); this.emitText("\n"); firstText = false; }
-          this.emitText(delta.content);
-          content += delta.content;
-        }
-
-        // Accumulate tool calls (arguments arrive in chunks)
-        if (delta.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            const existing = toolCalls.get(tc.index);
-            if (existing) {
-              if (tc.function?.arguments) existing.arguments += tc.function.arguments;
-            } else {
-              toolCalls.set(tc.index, {
-                id: tc.id || "",
-                name: tc.function?.name || "",
-                arguments: tc.function?.arguments || "",
-              });
-            }
-          }
-        }
-
-        if (chunk.choices[0]?.finish_reason) {
-          finishReason = chunk.choices[0].finish_reason;
-        }
-      }
-
-      // Reconstruct ChatCompletion from streamed chunks
-      const assembledToolCalls = toolCalls.size > 0
-        ? Array.from(toolCalls.entries())
-            .sort(([a], [b]) => a - b)
-            .map(([idx, tc]) => ({
-              id: tc.id,
-              type: "function" as const,
-              function: { name: tc.name, arguments: tc.arguments },
-            }))
-        : undefined;
-
-      return {
-        id: "stream",
-        object: "chat.completion",
-        created: Date.now(),
-        model: this.model,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant" as const,
-              content: content || null,
-              tool_calls: assembledToolCalls,
-              refusal: null,
-            },
-            finish_reason: finishReason || "stop",
-            logprobs: null,
-          },
-        ],
-        usage: usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-      } as OpenAI.ChatCompletion;
     }, this.abortController?.signal);
   }
 

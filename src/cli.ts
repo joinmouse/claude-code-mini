@@ -11,7 +11,6 @@ import type { PermissionMode } from "./tools.js";
 interface ParsedArgs {
   permissionMode: PermissionMode;
   model: string;
-  apiBase?: string;
   prompt?: string;
   resume?: boolean;
   thinking?: boolean;
@@ -24,7 +23,6 @@ function parseArgs(): ParsedArgs {
   let permissionMode: PermissionMode = "default";
   let thinking = false;
   let model = process.env.MINI_CLAUDE_MODEL || "claude-opus-4-6";
-  let apiBase: string | undefined;
   let resume = false;
   let maxCost: number | undefined;
   let maxTurns: number | undefined;
@@ -43,8 +41,6 @@ function parseArgs(): ParsedArgs {
       thinking = true;
     } else if (args[i] === "--model" || args[i] === "-m") {
       model = args[++i] || model;
-    } else if (args[i] === "--api-base") {
-      apiBase = args[++i];
     } else if (args[i] === "--resume") {
       resume = true;
     } else if (args[i] === "--max-cost") {
@@ -64,7 +60,6 @@ Options:
   --dont-ask          Auto-deny anything needing confirmation (for CI)
   --thinking          Enable extended thinking (Anthropic only)
   --model, -m         Model to use (default: claude-opus-4-6, or MINI_CLAUDE_MODEL env)
-  --api-base URL      Use OpenAI-compatible API endpoint (key via env var)
   --resume            Resume the last session
   --max-cost USD      Stop when estimated cost exceeds this amount
   --max-turns N       Stop after N agentic turns
@@ -85,7 +80,6 @@ Examples:
   mini-claude --plan "how would you refactor this?"
   mini-claude --accept-edits "add error handling to api.ts"
   mini-claude --max-cost 0.50 --max-turns 20 "implement feature X"
-  OPENAI_API_KEY=sk-xxx mini-claude --api-base https://aihubmix.com/v1 --model gpt-4o "hello"
   mini-claude --resume
   mini-claude  # starts interactive REPL
 `);
@@ -98,7 +92,6 @@ Examples:
   return {
     permissionMode,
     model,
-    apiBase,
     resume,
     thinking,
     maxCost,
@@ -292,47 +285,24 @@ async function runRepl(agent: Agent) {
 }
 
 async function main() {
-  const { permissionMode, model, apiBase, prompt, resume, thinking, maxCost, maxTurns } = parseArgs();
+  const { permissionMode, model, prompt, resume, thinking, maxCost, maxTurns } = parseArgs();
 
-  // Resolve API config from env vars (API keys only via env, not CLI)
-  let resolvedApiBase = apiBase;
-  let resolvedApiKey: string | undefined;
-  let resolvedUseOpenAI = !!apiBase;
+  // Resolve API config from env vars
+  const resolvedApiKey = process.env.ANTHROPIC_API_KEY;
+  let resolvedBaseURL: string | undefined;
 
-  // Check OPENAI env vars first (if OPENAI_BASE_URL is set, use OpenAI format)
-  if (process.env.OPENAI_API_KEY && process.env.OPENAI_BASE_URL) {
-    resolvedApiKey = process.env.OPENAI_API_KEY;
-    resolvedApiBase = resolvedApiBase || process.env.OPENAI_BASE_URL;
-    resolvedUseOpenAI = true;
-  } else if (process.env.ANTHROPIC_API_KEY) {
-    resolvedApiKey = process.env.ANTHROPIC_API_KEY;
-    resolvedApiBase = resolvedApiBase || process.env.ANTHROPIC_BASE_URL;
-    resolvedUseOpenAI = false;
-  } else if (process.env.OPENAI_API_KEY) {
-    resolvedApiKey = process.env.OPENAI_API_KEY;
-    resolvedApiBase = resolvedApiBase || process.env.OPENAI_BASE_URL;
-    resolvedUseOpenAI = true;
-  }
-
-  // --api-base without env key: check if any key is available
-  if (!resolvedApiKey && apiBase) {
-    resolvedApiKey = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
-    resolvedUseOpenAI = true;
+  if (process.env.ANTHROPIC_BASE_URL) {
+    resolvedBaseURL = process.env.ANTHROPIC_BASE_URL;
   }
 
   if (!resolvedApiKey) {
-    printError(
-      `API key is required.\n` +
-        `  Set ANTHROPIC_API_KEY (+ optional ANTHROPIC_BASE_URL) for Anthropic format,\n` +
-        `  or OPENAI_API_KEY + OPENAI_BASE_URL for OpenAI-compatible format.`
-    );
+    printError("ANTHROPIC_API_KEY environment variable is required.");
     process.exit(1);
   }
 
   const agent = new Agent({
     permissionMode, model, thinking, maxCostUsd: maxCost, maxTurns,
-    apiBase: resolvedUseOpenAI ? resolvedApiBase : undefined,
-    anthropicBaseURL: !resolvedUseOpenAI ? resolvedApiBase : undefined,
+    baseURL: resolvedBaseURL,
     apiKey: resolvedApiKey,
   });
 
@@ -344,7 +314,6 @@ async function main() {
       if (session) {
         agent.restoreSession({
           anthropicMessages: session.anthropicMessages,
-          openaiMessages: session.openaiMessages,
         });
       } else {
         printInfo("No session found to resume.");

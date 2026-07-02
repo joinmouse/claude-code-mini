@@ -72,7 +72,6 @@ The design philosophy is **progressive compression**: use the cheapest methods f
 
 ### Tier 0: Execution-Time Truncation (truncateResult)
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // tools.ts
@@ -88,22 +87,6 @@ function truncateResult(result: string): string {
   );
 }
 ```
-#### **Python**
-```python
-# tools.py
-MAX_RESULT_CHARS = 50000
-
-def _truncate_result(result: str) -> str:
-    if len(result) <= MAX_RESULT_CHARS:
-        return result
-    keep_each = (MAX_RESULT_CHARS - 60) // 2
-    return (
-        result[:keep_each]
-        + f"\n\n[... truncated {len(result) - keep_each * 2} chars ...]\n\n"
-        + result[-keep_each:]
-    )
-```
-<!-- tabs:end -->
 
 Keeping both head and tail rather than just the head: the beginning of files contains imports, class definitions, and other structural information, while command output error summaries are typically at the end.
 
@@ -146,7 +129,6 @@ Key design points for this tier:
 
 Dynamically tightens the size of tool results in history based on context pressure:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -171,34 +153,11 @@ private budgetToolResultsAnthropic(): void {
   }
 }
 ```
-#### **Python**
-```python
-# agent.py
-def _budget_tool_results_anthropic(self) -> None:
-    utilization = self.last_input_token_count / self.effective_window if self.effective_window else 0
-    if utilization < 0.5:
-        return
-    budget = 15000 if utilization > 0.70 else 30000
-    for msg in self._anthropic_messages:
-        if msg.get("role") != "user" or not isinstance(msg.get("content"), list):
-            continue
-        for block in msg["content"]:
-            if (isinstance(block, dict) and block.get("type") == "tool_result"
-                    and isinstance(block.get("content"), str) and len(block["content"]) > budget):
-                keep = (budget - 80) // 2
-                block["content"] = (
-                    block["content"][:keep]
-                    + f"\n\n[... budgeted: {len(block['content']) - keep * 2} chars truncated ...]\n\n"
-                    + block["content"][-keep:]
-                )
-```
-<!-- tabs:end -->
 
 Tier 0 is a one-time 50K hard limit; Budget recalculates before every API call, with the budget automatically tightening as utilization increases. Using dual thresholds (50%/70%) rather than a single threshold preserves more detail when context space is still ample.
 
 ### Tier 2: Snip -- Replace Stale Tool Results
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -206,14 +165,6 @@ const SNIPPABLE_TOOLS = new Set(["read_file", "grep_search", "list_files", "run_
 const SNIP_PLACEHOLDER = "[Content snipped - re-read if needed]";
 const KEEP_RECENT_RESULTS = 3;
 ```
-#### **Python**
-```python
-# agent.py
-SNIPPABLE_TOOLS = {"read_file", "grep_search", "list_files", "run_shell"}
-SNIP_PLACEHOLDER = "[Content snipped - re-read if needed]"
-KEEP_RECENT_RESULTS = 3
-```
-<!-- tabs:end -->
 
 Snip strategy (triggered when utilization > 60%):
 - Same file read multiple times by `read_file` -> keep only the latest, snip older ones
@@ -224,7 +175,6 @@ Key point: **Only the `tool_result` content is cleared; the `tool_use` block is 
 
 ### Tier 3: Microcompact -- Aggressive Cleanup When Cache Goes Cold
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -236,17 +186,6 @@ private microcompactAnthropic(): void {
   // All old tool_results except the most recent 3 -> "[Old result cleared]"
 }
 ```
-#### **Python**
-```python
-# agent.py
-MICROCOMPACT_IDLE_S = 5 * 60
-
-def _microcompact_anthropic(self) -> None:
-    if not self.last_api_call_time or (time.time() - self.last_api_call_time) < MICROCOMPACT_IDLE_S:
-        return
-    # All old tool_results except the most recent 3 -> "[Old result cleared]"
-```
-<!-- tabs:end -->
 
 The reason for using a time-based trigger: prompt cache has a TTL, and after 5+ minutes of idleness the cache has most likely expired. Continuing to retain old message content has no cost advantage, so aggressive cleanup is preferable.
 
@@ -258,7 +197,6 @@ We only implemented the time-based path. Claude Code's cache-edit path relies on
 
 #### Trigger Condition
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -269,23 +207,13 @@ private async checkAndCompact(): Promise<void> {
   }
 }
 ```
-#### **Python**
-```python
-# agent.py
-async def _check_and_compact(self) -> None:
-    if self.last_input_token_count > self.effective_window * 0.85:
-        print_info("Context window filling up, compacting conversation...")
-        await self._compact_conversation()
-```
-<!-- tabs:end -->
 
 `effectiveWindow = model context window - 20000`, reserving space for new input/output. For Claude (200K window), the trigger point is at approximately 76.5% total utilization.
 
-> ⚠️ **Caller contract**: `checkAndCompact` must only be called at a turn boundary — after the user message is pushed into the message array and before the API call. The `compactAnthropic` / `compactOpenAI` functions below assume the last message is a plain user-text message: they `slice(0, -1)` it off when building the summarization request and re-append it after the summary lands. If you call them mid-tool-loop, the last message will be a `tool_result` (Anthropic) or a `tool`-role message (OpenAI); slicing it off orphans the preceding `assistant`'s `tool_use` / `tool_calls`, and the API will reject the summarize request.
+> ⚠️ **Caller contract**: `checkAndCompact` must only be called at a turn boundary — after the user message is pushed into the message array and before the API call. The `compactAnthropic` function below assumes the last message is a plain user-text message: it `slice(0, -1)` it off when building the summarization request and re-appends it after the summary lands. If you call it mid-tool-loop, the last message will be a `tool_result`; slicing it off orphans the preceding `assistant`'s `tool_use`, and the API will reject the summarize request.
 
 #### Anthropic Backend Compression
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // agent.ts
@@ -331,115 +259,8 @@ private async compactAnthropic(): Promise<void> {
   this.lastInputTokenCount = 0;
 }
 ```
-#### **Python**
-```python
-# agent.py
-async def _compact_anthropic(self) -> None:
-    if len(self._anthropic_messages) < 4:
-        return
-
-    last_user_msg = self._anthropic_messages[-1]
-
-    summary_resp = await self._anthropic_client.messages.create(
-        model=self.model,
-        max_tokens=2048,
-        system="You are a conversation summarizer. Be concise but preserve important details.",
-        messages=[
-            *self._anthropic_messages[:-1],
-            {"role": "user", "content": "Summarize the conversation so far in a concise paragraph, "
-             "preserving key decisions, file paths, and context needed to continue the work."},
-        ],
-    )
-    summary_text = (summary_resp.content[0].text
-                    if summary_resp.content and summary_resp.content[0].type == "text"
-                    else "No summary available.")
-
-    self._anthropic_messages = [
-        {"role": "user", "content": f"[Previous conversation summary]\n{summary_text}"},
-        {"role": "assistant", "content": "Understood. I have the context from our previous conversation. How can I continue helping?"},
-    ]
-
-    if last_user_msg.get("role") == "user":
-        self._anthropic_messages.append(last_user_msg)
-    self.last_input_token_count = 0
-```
-<!-- tabs:end -->
 
 Key differences from Claude Code: Claude Code uses a two-stage "analyze-summarize" prompt for higher quality summaries, restores the 5 most recent files and active skills after compression, and has a circuit breaker to prevent infinite loops. Ours is a simplified version -- single-paragraph summary, no restoration mechanism, no circuit breaker.
-
-#### OpenAI Backend Compression
-
-OpenAI's system prompt lives in the message array (`role: "system"`), so it needs to be preserved separately during compression:
-
-<!-- tabs:start -->
-#### **TypeScript**
-```typescript
-// agent.ts
-private async compactOpenAI(): Promise<void> {
-  if (this.openaiMessages.length < 5) return;
-
-  const systemMsg = this.openaiMessages[0];
-  const lastUserMsg = this.openaiMessages[this.openaiMessages.length - 1];
-
-  const summaryResp = await this.openaiClient!.chat.completions.create({
-    model: this.model,
-    max_tokens: 2048,
-    messages: [
-      { role: "system", content: "You are a conversation summarizer. Be concise but preserve important details." },
-      ...this.openaiMessages.slice(1, -1),
-      { role: "user", content: "Summarize the conversation so far..." },
-    ],
-  });
-
-  const summaryText = summaryResp.choices[0]?.message?.content || "No summary available.";
-
-  this.openaiMessages = [
-    systemMsg,
-    { role: "user", content: `[Previous conversation summary]\n${summaryText}` },
-    { role: "assistant", content: "Understood. I have the context..." },
-  ];
-
-  if ((lastUserMsg as any).role === "user") {
-    this.openaiMessages.push(lastUserMsg);
-  }
-
-  this.lastInputTokenCount = 0;
-}
-```
-#### **Python**
-```python
-# agent.py
-async def _compact_openai(self) -> None:
-    if len(self._openai_messages) < 5:
-        return
-
-    system_msg = self._openai_messages[0]
-    last_user_msg = self._openai_messages[-1]
-
-    summary_resp = await self._openai_client.chat.completions.create(
-        model=self.model,
-        max_tokens=2048,
-        messages=[
-            {"role": "system", "content": "You are a conversation summarizer. Be concise but preserve important details."},
-            *self._openai_messages[1:-1],
-            {"role": "user", "content": "Summarize the conversation so far..."},
-        ],
-    )
-    summary_text = summary_resp.choices[0].message.content or "No summary available."
-
-    self._openai_messages = [
-        system_msg,
-        {"role": "user", "content": f"[Previous conversation summary]\n{summary_text}"},
-        {"role": "assistant", "content": "Understood. I have the context..."},
-    ]
-
-    if last_user_msg.get("role") == "user":
-        self._openai_messages.append(last_user_msg)
-    self.last_input_token_count = 0
-```
-<!-- tabs:end -->
-
-The guard condition is `< 5` rather than `< 4`, because the OpenAI message array contains at minimum system + 2 conversation turns + latest user message = 5 entries.
 
 ### Manual Compaction
 
@@ -448,32 +269,23 @@ The guard condition is `< 5` rather than `< 4`, because the OpenAI message array
   ℹ Conversation compacted.
 ```
 
-Call chain: `cli.ts` -> `agent.compact()` -> `compactConversation()` -> `compactAnthropic()` / `compactOpenAI()`
+Call chain: `cli.ts` -> `agent.compact()` -> `compactConversation()` -> `compactAnthropic()`
 
 ### Token Statistics and Pipeline Orchestration
 
 Updated after each API call:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 this.totalInputTokens += response.usage.input_tokens;
 this.totalOutputTokens += response.usage.output_tokens;
 this.lastInputTokenCount = response.usage.input_tokens;
 ```
-#### **Python**
-```python
-self.total_input_tokens += response.usage.input_tokens
-self.total_output_tokens += response.usage.output_tokens
-self.last_input_token_count = response.usage.input_tokens
-```
-<!-- tabs:end -->
 
 `lastInputTokenCount` is used to determine if we're approaching the window limit; `totalInputTokens` accumulates across all calls for cost estimation. We use API return values directly, which is simpler than Claude Code's anchor+estimation approach, and sufficient for our needs.
 
 The 4 tiers execute sequentially before each API call:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 private runCompressionPipeline(): void {
@@ -482,19 +294,6 @@ private runCompressionPipeline(): void {
   this.microcompactAnthropic();         // Tier 3
 }
 ```
-#### **Python**
-```python
-def _run_compression_pipeline(self) -> None:
-    if self.use_openai:
-        self._budget_tool_results_openai()
-        self._snip_stale_results_openai()
-        self._microcompact_openai()
-    else:
-        self._budget_tool_results_anthropic()
-        self._snip_stale_results_anthropic()
-        self._microcompact_anthropic()
-```
-<!-- tabs:end -->
 
 Tiers 1-3 run **before** every API call (zero API cost). Tier 4 runs at the **turn boundary** — after the user message is pushed into the array and before the `while` loop starts. **Do not** place Tier 4 at the end of the tool loop: at that point the last message is `{role: "user", content: [tool_result, ...]}`, and `compactAnthropic`'s `slice(0, -1)` would sever its pairing with the preceding `assistant` message's `tool_use`, causing the Anthropic API to reject the summarize call with *"tool_use ids were found without tool_result blocks immediately after"*. `lastInputTokenCount` is still usable in the new location — it reflects the state of the previous turn's final API call, which is enough to decide whether to trigger. The intra-pipeline order is also intentional: Budget compresses large results first, making Snip's deduplication judgments more accurate, and Microcompact performs indiscriminate cleanup last when the time condition is met.
 

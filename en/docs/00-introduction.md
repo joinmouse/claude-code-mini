@@ -59,7 +59,6 @@ graph TB
     Agent --> Prompt[prompt.ts<br/>System Prompt]
     Agent --> API{API Backend}
     API -->|Anthropic| AnthropicSDK[Anthropic SDK]
-    API -->|OpenAI Compatible| OpenAISDK[OpenAI SDK]
     Agent --> Tools[tools.ts<br/>Tool System]
     Tools --> FS[File Read/Write]
     Tools --> Shell[Shell Commands]
@@ -112,38 +111,21 @@ Component responsibilities:
 | `prompt.ts` | ~154 | System Prompt construction: template + @include + variable substitution + memory/skills injection |
 | `session.ts` | ~63 | Session persistence: JSON file storage |
 | `frontmatter.ts` | ~41 | YAML frontmatter parser |
-| `python/` | -- | Full Python implementation (`mini_claude/` package, ~2920 lines) |
 
 ## Technology Stack
 
-Both TypeScript and Python versions are implemented separately -- just pick whichever you're comfortable with.
-
-<!-- tabs:start -->
-#### **TypeScript**
+The project is implemented in TypeScript -- same language as Claude Code itself.
 
 ```
 TypeScript           -- Type safety, same language as Claude Code
 @anthropic-ai/sdk    -- Anthropic official SDK
-openai               -- OpenAI compatible backend support
 chalk                -- Terminal color output
 glob                 -- File pattern matching
 ```
 
-#### **Python**
-
-```
-Python 3.11+         -- Clean and readable
-anthropic            -- Anthropic official SDK
-openai               -- OpenAI compatible backend support
-```
-<!-- tabs:end -->
-
 No frameworks, no build toolchains -- just the most basic dependencies.
 
 ## Quick Start
-
-<!-- tabs:start -->
-#### **TypeScript**
 
 ```bash
 git clone https://github.com/Windy3f3f3f3f/claude-code-from-scratch.git
@@ -152,17 +134,6 @@ npm install
 export ANTHROPIC_API_KEY=sk-ant-xxx
 npm run dev
 ```
-
-#### **Python**
-
-```bash
-git clone https://github.com/Windy3f3f3f3f/claude-code-from-scratch.git
-cd claude-code-from-scratch/python
-pip install -e .
-export ANTHROPIC_API_KEY=sk-ant-xxx
-mini-claude-py "hello"
-```
-<!-- tabs:end -->
 
 After starting:
 
@@ -198,7 +169,7 @@ mini-claude --max-cost 0.50 --max-turns 20  # Budget control
 | [2. Tool System](/en/docs/02-tools.md) | `tools.ts` | `src/Tool.ts` + `src/tools/` (66+ tools) |
 | [3. System Prompt](/en/docs/03-system-prompt.md) | `prompt.ts` | `src/constants/prompts.ts` |
 | [4. CLI and Sessions](/en/docs/04-cli-session.md) | `cli.ts` + `session.ts` | `src/entrypoints/cli.tsx` |
-| [5. Streaming Output](/en/docs/05-streaming.md) | `agent.ts`'s two stream methods | `src/services/api/claude.ts` |
+| [5. Streaming Output](/en/docs/05-streaming.md) | `agent.ts`'s stream methods | `src/services/api/claude.ts` |
 | [6. Permissions and Security](/en/docs/06-permissions.md) | `tools.ts`'s `checkPermission()` + rule config | `src/utils/permissions/` (52KB) |
 | [7. Context Management](/en/docs/07-context.md) | `agent.ts`'s `checkAndCompact()` | `src/services/compact/` |
 | **Phase 2: Advanced Capabilities** | | |

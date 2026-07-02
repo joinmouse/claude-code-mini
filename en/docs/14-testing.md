@@ -6,7 +6,7 @@ Verify that mini-claude's 19 core features all work correctly. All tests are man
 
 ```mermaid
 graph LR
-    Setup["bash test/setup.sh"] --> Build["npm run build (TS version)"]
+    Setup["bash test/setup.sh"] --> Build["npm run build"]
     Build --> Test["Run tests one by one"]
     Test --> Cleanup["bash test/cleanup.sh"]
 
@@ -33,7 +33,7 @@ cd claude-code-from-scratch
 # One-command setup for test environment (MCP, Skills, CLAUDE.md, large file, quote test file, custom Agent)
 bash test/setup.sh
 
-# Build TS version (Python version doesn't need building)
+# Build TS version
 npm run build
 ```
 
@@ -43,12 +43,8 @@ ANTHROPIC_API_KEY=sk-xxx
 ANTHROPIC_BASE_URL=https://aihubmix.com   # Optional
 ```
 
-> **Tip**: If the system environment has both `OPENAI_API_KEY` + `OPENAI_BASE_URL` and `ANTHROPIC_API_KEY`,
-> it will prefer the OpenAI-compatible path. Both paths support all features.
-
 ## How to Launch
 
-**TS version**:
 ```bash
 # Interactive REPL (recommended; can test skill, plan mode, and REPL commands)
 node dist/cli.js --yolo
@@ -56,16 +52,6 @@ node dist/cli.js --yolo
 # One-shot mode
 node dist/cli.js --yolo "your prompt"
 ```
-
-**Python version**:
-```bash
-python -m mini_claude --yolo
-
-# One-shot mode
-python -m mini_claude --yolo "your prompt"
-```
-
-> The following test steps use the TS version in command-line examples. For the Python version, replace `node dist/cli.js` with `python -m mini_claude` -- functionality is identical.
 
 ---
 
@@ -115,11 +101,6 @@ Pass criteria: Returns plain text content converted from HTML
 
 ```
 Read the files src/frontmatter.ts, src/session.ts, and src/skills.ts at the same time, then tell me each file's line count.
-```
-
-Python version alternative -- read Python files:
-```
-Read the files python/mini_claude/frontmatter.py and python/mini_claude/session.py at the same time, then tell me each file's line count.
 ```
 
 Pass criteria: Multiple `read_file` calls appear simultaneously (not one after another)
@@ -457,8 +438,7 @@ Pass criteria: Preview shows only the first 30 lines, with `... (50 lines total)
 
 **First session**:
 ```bash
-node dist/cli.js --yolo          # TS version
-python -m mini_claude --yolo     # Python version
+node dist/cli.js --yolo
 ```
 ```
 Remember this: The secret code is BANANA-42. Read package.json and tell me the version.
@@ -467,8 +447,7 @@ Then `exit` to quit.
 
 **Second session (resume)**:
 ```bash
-node dist/cli.js --yolo --resume          # TS version
-python -m mini_claude --yolo --resume     # Python version
+node dist/cli.js --yolo --resume
 ```
 
 Pass criteria: On startup, shows session restored information
@@ -481,15 +460,14 @@ Pass criteria: The model answers `BANANA-42`
 
 **Comparison (new session)**:
 ```bash
-node dist/cli.js --yolo          # TS version
-python -m mini_claude --yolo     # Python version
+node dist/cli.js --yolo
 ```
 ```
 What was the secret code I told you earlier?
 ```
 Pass criteria: The model cannot answer
 
-**Design intent**: Sessions are stored in JSON format in `~/.mini-claude/sessions/`, containing both Anthropic and OpenAI message histories (because the two backends have different message formats). `--resume` automatically finds the most recent session and continues the conversation from there.
+**Design intent**: Sessions are stored in JSON format in `~/.mini-claude/sessions/`, containing the Anthropic message history. `--resume` automatically finds the most recent session and continues the conversation from there.
 
 ---
 
@@ -498,10 +476,7 @@ Pass criteria: The model cannot answer
 **Test objective**: Verify that when a prompt argument is passed, it executes automatically and exits.
 
 ```bash
-# TS version
 node dist/cli.js --yolo "Read the file package.json and tell me the project name. Only output the name."
-# Python version
-python -m mini_claude --yolo "Read the file package.json and tell me the project name. Only output the name."
 ```
 
 Pass criteria:
@@ -527,10 +502,7 @@ Pass criteria: The tool returns an error message, but the program doesn't crash 
 **Test objective**: Verify agent loop iteration limits.
 
 ```bash
-# TS version
 node dist/cli.js --yolo --max-turns 2 "Read these files one by one: package.json, tsconfig.json, src/cli.ts, src/agent.ts, src/tools.ts. Tell me the line count of each."
-# Python version
-python -m mini_claude --yolo --max-turns 2 "Read these files one by one: package.json, tsconfig.json, src/cli.ts, src/agent.ts, src/tools.ts. Tell me the line count of each."
 ```
 
 Pass criteria:
@@ -579,24 +551,24 @@ Cleans up all test-generated files (MCP config, skills, rules, memory files, cus
 
 ## Quick Reference Table
 
-| # | Feature | Category | TS Pass | PY Pass | Notes |
-|---|---------|----------|:-------:|:-------:|-------|
-| 1 | MCP tool invocation | Basic tools | ☐ | ☐ | 3 tools |
-| 2 | WebFetch | Basic tools | ☐ | ☐ | httpbin.org |
-| 3 | Parallel tool execution | Basic tools | ☐ | ☐ | Multi-file simultaneous read |
-| 4 | Semantic memory recall | Memory & context | ☐ | ☐ | Save -> new conversation -> semantic query |
-| 5 | @include + Rules | Memory & context | ☐ | ☐ | Chinese response |
-| 6 | Read-before-edit | Memory & context | ☐ | ☐ | Code layer or prompt layer |
-| 7 | Large result persistence | Memory & context | ☐ | ☐ | 75KB file |
-| 8 | Skill invocation | Skills & extensions | ☐ | ☐ | /greet /commit |
-| 9 | ToolSearch | Skills & extensions | ☐ | ☐ | Plan mode tools |
-| 10 | REPL commands | Skills & extensions | ☐ | ☐ | /cost /memory /compact /plan |
-| 11 | Sub-agent system | Agent architecture | ☐ | ☐ | explore/plan/general |
-| 12 | Plan Mode | Agent architecture | ☐ | ☐ | /plan manual entry + approval |
-| 13 | Quote normalization | Editing & search | ☐ | ☐ | curly -> straight quotes |
-| 14 | Session Resume | Session & CLI | ☐ | ☐ | --resume restore session |
-| 15 | One-shot mode | Session & CLI | ☐ | ☐ | Pass prompt, auto exit |
-| 16 | Budget control | Session & CLI | ☐ | ☐ | --max-turns limit |
-| 17 | Grep Search | Editing & search | ☐ | ☐ | Regex search + include |
-| 18 | Write File | Editing & search | ☐ | ☐ | New file + auto directory creation |
-| 19 | Custom Agent | Extension system | ☐ | ☐ | .claude/agents/ definition |
+| # | Feature | Category | Pass | Notes |
+|---|---------|----------|:----:|-------|
+| 1 | MCP tool invocation | Basic tools | ☐ | 3 tools |
+| 2 | WebFetch | Basic tools | ☐ | httpbin.org |
+| 3 | Parallel tool execution | Basic tools | ☐ | Multi-file simultaneous read |
+| 4 | Semantic memory recall | Memory & context | ☐ | Save -> new conversation -> semantic query |
+| 5 | @include + Rules | Memory & context | ☐ | Chinese response |
+| 6 | Read-before-edit | Memory & context | ☐ | Code layer or prompt layer |
+| 7 | Large result persistence | Memory & context | ☐ | 75KB file |
+| 8 | Skill invocation | Skills & extensions | ☐ | /greet /commit |
+| 9 | ToolSearch | Skills & extensions | ☐ | Plan mode tools |
+| 10 | REPL commands | Skills & extensions | ☐ | /cost /memory /compact /plan |
+| 11 | Sub-agent system | Agent architecture | ☐ | explore/plan/general |
+| 12 | Plan Mode | Agent architecture | ☐ | /plan manual entry + approval |
+| 13 | Quote normalization | Editing & search | ☐ | curly -> straight quotes |
+| 14 | Session Resume | Session & CLI | ☐ | --resume restore session |
+| 15 | One-shot mode | Session & CLI | ☐ | Pass prompt, auto exit |
+| 16 | Budget control | Session & CLI | ☐ | --max-turns limit |
+| 17 | Grep Search | Editing & search | ☐ | Regex search + include |
+| 18 | Write File | Editing & search | ☐ | New file + auto directory creation |
+| 19 | Custom Agent | Extension system | ☐ | .claude/agents/ definition |

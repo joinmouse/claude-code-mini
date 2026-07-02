@@ -150,7 +150,6 @@ Shell: {{shell}}
 
 ### prompt.ts 实现
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 import { readFileSync, existsSync } from "fs";
@@ -219,74 +218,6 @@ export function buildSystemPrompt(): string {
     .split("{{agents}}").join(buildAgentDescriptions());
 }
 ```
-#### **Python**
-```python
-import os
-import platform
-import subprocess
-from pathlib import Path
-
-
-def load_claude_md() -> str:
-    parts: list[str] = []
-    d = Path.cwd().resolve()
-    while True:
-        f = d / "CLAUDE.md"
-        if f.is_file():
-            try:
-                content = f.read_text()
-                content = resolve_includes(content, str(d))  # @include 解析
-                parts.insert(0, content)
-            except Exception:
-                pass
-        parent = d.parent
-        if parent == d:
-            break
-        d = parent
-    rules = load_rules_dir(str(Path.cwd()))  # .claude/rules/*.md
-    claude_md = "\n\n# Project Instructions (CLAUDE.md)\n" + "\n\n---\n\n".join(parts) if parts else ""
-    return claude_md + rules
-
-
-def get_git_context() -> str:
-    try:
-        opts = {"encoding": "utf-8", "timeout": 3, "capture_output": True}
-        branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], **opts).stdout.strip()
-        log = subprocess.run(["git", "log", "--oneline", "-5"], **opts).stdout.strip()
-        status = subprocess.run(["git", "status", "--short"], **opts).stdout.strip()
-        result = f"\nGit branch: {branch}"
-        if log:
-            result += f"\nRecent commits:\n{log}"
-        if status:
-            result += f"\nGit status:\n{status}"
-        return result
-    except Exception:
-        return ""
-
-
-def build_system_prompt() -> str:
-    from .memory import build_memory_prompt_section
-    from .skills import build_skill_descriptions
-    from .subagent import build_agent_descriptions
-    from datetime import date
-
-    replacements = {
-        "{{cwd}}": str(Path.cwd()),
-        "{{date}}": date.today().isoformat(),
-        "{{platform}}": f"{platform.system()} {platform.machine()}",
-        "{{shell}}": os.environ.get("SHELL", "/bin/sh"),
-        "{{git_context}}": get_git_context(),
-        "{{claude_md}}": load_claude_md(),
-        "{{memory}}": build_memory_prompt_section(),
-        "{{skills}}": build_skill_descriptions(),
-        "{{agents}}": build_agent_descriptions(),
-    }
-    result = SYSTEM_PROMPT_TEMPLATE
-    for key, value in replacements.items():
-        result = result.replace(key, value)
-    return result
-```
-<!-- tabs:end -->
 
 ### 简化取舍
 
@@ -304,7 +235,6 @@ def build_system_prompt() -> str:
 
 CLAUDE.md 文件支持 `@` 语法引用外部文件，实现项目配置的模块化。同时，`.claude/rules/*.md` 目录下的规则文件会自动加载。
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // prompt.ts — @include 解析
@@ -341,7 +271,6 @@ function resolveIncludes(
   });
 }
 ```
-<!-- tabs:end -->
 
 三种路径格式：
 - `@./relative/path` — 相对于当前 CLAUDE.md 所在目录
@@ -355,7 +284,6 @@ function resolveIncludes(
 
 `.claude/rules/*.md` 自动加载：
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // prompt.ts — 规则目录加载
@@ -373,7 +301,6 @@ function loadRulesDir(dir: string): string {
   return parts.length > 0 ? "\n\n## Rules\n" + parts.join("\n\n") : "";
 }
 ```
-<!-- tabs:end -->
 
 使用示例：
 

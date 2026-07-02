@@ -1,11 +1,14 @@
 # Claude Code From Scratch
 
-[![GitHub stars](https://img.shields.io/github/stars/Windy3f3f3f3f/claude-code-from-scratch?style=social)](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](#)
-[![Lines of Code](https://img.shields.io/badge/~4300_lines-minimal-green)](#)
+> 🍴 This project is forked from [Windy3f3f3f3f/claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) and streamlined to a pure TypeScript + Anthropic single version (Python implementation and OpenAI-compatible backend removed). The online tutorial remains on the [original project site](https://windy3f3f3f3f.github.io/claude-code-from-scratch/). Full credit to the original author [@Windy3f3f3f3f](https://github.com/Windy3f3f3f3f).
 
-> Build Claude Code from scratch, step by step
+[![GitHub stars](https://img.shields.io/github/stars/joinmouse/claude-code-mini?style=flat-square&logo=github)](https://github.com/joinmouse/claude-code-mini)
+[![GitHub forks](https://img.shields.io/github/forks/joinmouse/claude-code-mini?style=flat-square&logo=github)](https://github.com/joinmouse/claude-code-mini/fork)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](#)
+[![Lines of Code](https://img.shields.io/badge/~3400_lines-minimal-green?style=flat-square)](#)
+
+**Build Claude Code from scratch, step by step**
 
 <p align="center">
   <a href="https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/"><strong>📘 Read Tutorial Online →</strong></a>
@@ -19,11 +22,9 @@
 
 **Claude Code open-sourced 500K lines of TypeScript. Too much to read?**
 
-This project recreates Claude Code's core architecture in **~4300 lines** — Agent Loop, 13 tools (with parallel + streaming execution), 4-tier context compression, semantic memory recall, skills, multi-agent, MCP integration — with each step comparing the real source to our simplified version.
+This project recreates Claude Code's core architecture in **~3400 lines of TypeScript** — Agent Loop, 13 tools (with parallel + streaming execution), 4-tier context compression, semantic memory recall, skills, multi-agent, MCP integration — with each step comparing the real source to our simplified version.
 
 This isn't a demo — it's a **step-by-step tutorial**. Follow along, write a few thousand lines of code yourself, and quickly grasp the essence of the best coding agent out there. No need to wade through hundreds of thousands of lines.
-
-<video src="https://github.com/user-attachments/assets/4f6597e2-6ea3-45ae-8a6b-77662c4e9540" width="100%" autoplay loop muted playsinline></video>
 
 ## Step-by-Step Tutorial
 
@@ -36,7 +37,7 @@ This isn't a demo — it's a **step-by-step tutorial**. Follow along, write a fe
 | [2. Tool System](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/02-tools) | 13 tools + mtime guard + deferred loading | `tools.ts` ↔ `Tool.ts` + 66 tools |
 | [3. System Prompt](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/03-system-prompt) | Prompt engineering + @include syntax | `prompt.ts` ↔ `prompts.ts` |
 | [4. CLI & Sessions](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/04-cli-session) | REPL, Ctrl+C, session persistence | `cli.ts` ↔ `cli.tsx` |
-| [5. Streaming](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/05-streaming) | Dual-backend + streaming tool exec + parallel | `agent.ts` ↔ `api/claude.ts` |
+| [5. Streaming](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/05-streaming) | Anthropic streaming + streaming tool exec + parallel | `agent.ts` ↔ `api/claude.ts` |
 | [6. Permissions](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/06-permissions) | 5 modes + declarative rules + danger detection | `tools.ts` ↔ `permissions/` (52KB) |
 | [7. Context](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/07-context) | 4-tier compression + large result persistence | `agent.ts` ↔ `compact/` |
 | **Phase 2: Advanced Capabilities** | | |
@@ -46,20 +47,19 @@ This isn't a demo — it's a **step-by-step tutorial**. Follow along, write a fe
 | [11. Multi-Agent](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/11-multi-agent) | Sub-Agent fork-return architecture | `subagent.ts` ↔ `AgentTool/` |
 | [12. MCP Integration](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/12-mcp) | JSON-RPC over stdio for external tools | `mcp.ts` ↔ `mcpClient.ts` |
 | [13. Comparison](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/13-whats-next) | Full comparison + extension ideas | Global |
+| [14. Testing](https://windy3f3f3f3f.github.io/claude-code-from-scratch/#/en/docs/14-testing) | 19 manual tests covering all features | `test/` |
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/Windy3f3f3f3f/claude-code-from-scratch.git
-cd claude-code-from-scratch
+git clone https://github.com/joinmouse/claude-code-mini.git
+cd claude-code-mini
 npm install && npm run build
 ```
 
 ### API Configuration
 
-Two backends supported, auto-detected via environment variables:
-
-**Option 1: Anthropic Format (Recommended)**
+Uses the Anthropic API. Configure via environment variable (custom base URL supported):
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-xxx"
@@ -67,23 +67,13 @@ export ANTHROPIC_API_KEY="sk-ant-xxx"
 export ANTHROPIC_BASE_URL="https://aihubmix.com"
 ```
 
-**Option 2: OpenAI-Compatible Format**
-
-```bash
-export OPENAI_API_KEY="sk-xxx"
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-```
-
 Default model is `claude-opus-4-6`. Customize via env var or CLI flag:
 
 ```bash
 export MINI_CLAUDE_MODEL="claude-sonnet-4-6"    # env var
-npm start -- --model gpt-4o                      # CLI flag (higher priority)
 ```
 
 ### Run
-
-**TypeScript**
 
 ```bash
 npm start                    # Interactive REPL mode (recommended)
@@ -96,36 +86,12 @@ npm start -- --max-cost 0.50 # Cost limit (USD)
 npm start -- --max-turns 20  # Turn limit
 ```
 
-**Python**
-
-```bash
-mini-claude-py               # Interactive REPL mode (recommended)
-mini-claude-py --resume      # Resume last session
-mini-claude-py --yolo        # Skip safety confirmations
-mini-claude-py --plan        # Plan mode: analyze only, no modifications
-mini-claude-py --accept-edits # Auto-approve file edits
-mini-claude-py --dont-ask    # CI mode: auto-deny confirmable actions
-mini-claude-py --max-cost 0.50 # Cost limit (USD)
-mini-claude-py --max-turns 20  # Turn limit
-```
-
 Install globally to use from any directory:
-
-**TypeScript**
 
 ```bash
 npm link                     # Global install
 cd ~/your-project
 mini-claude                  # Launch directly
-```
-
-**Python**
-
-```bash
-cd python
-pip install -e .             # Global install (editable mode)
-cd ~/your-project
-mini-claude-py               # Launch directly
 ```
 
 ### REPL Commands
@@ -156,13 +122,13 @@ mini-claude-py               # Launch directly
 | Multi-Agent | Sub-Agent + Coordinator + Swarm | Sub-Agent (3 built-in + custom agents) |
 | MCP Integration | mcpClient.ts + dynamic tool discovery | McpManager + JSON-RPC over stdio |
 | Budget Control | USD/turns/abort | USD + turn limits |
-| Code Size | 500k+ lines | ~4300 lines (TS) / ~3800 lines (Python) |
+| Code Size | 500k+ lines | ~3400 lines |
 
 ## Core Capabilities
 
 - **Agent Loop**: Automatically calls tools, processes results, iterates until done
 - **13 Tools**: Read/write/edit files (mtime guard), search, shell, WebFetch, ToolSearch (deferred loading), skills, sub-agents, Plan Mode
-- **Streaming**: Real-time output, Anthropic + OpenAI backends, streaming tool early execution
+- **Streaming**: Real-time output, Anthropic streaming, streaming tool early execution
 - **Parallel Tool Execution**: Read-only tools (read_file, grep_search, etc.) auto-parallelized, 2-3x speedup
 - **4-Tier Context Compression**: Budget trimming → stale snip → microcompact → auto-compact + large result persistence (>30KB to disk)
 - **Permission System**: 5 modes + declarative allow/deny rules in `.claude/settings.json` + 16 dangerous command patterns
@@ -181,23 +147,37 @@ mini-claude-py               # Launch directly
 
 ```
 src/
-├── agent.ts        # Agent loop: streaming, parallel exec, 4-tier compress  (1501 lines)
+├── agent.ts        # Agent loop: streaming, parallel exec, 4-tier compress  (1081 lines)
 ├── tools.ts        # Tools: 13 tools + mtime guard + deferred loading       (858 lines)
-├── cli.ts          # CLI entry: args, REPL, budget flags                    (371 lines)
-├── memory.ts       # Memory: 4 types + semantic recall + async prefetch     (376 lines)
+├── cli.ts          # CLI entry: args, REPL, budget flags                    (340 lines)
+├── memory.ts       # Memory: 4 types + semantic recall + async prefetch     (392 lines)
 ├── mcp.ts          # MCP client: JSON-RPC over stdio                        (266 lines)
 ├── prompt.ts       # System prompt: @include + template + injection         (230 lines)
 ├── ui.ts           # Terminal output: colors, formatting, sub-agent         (211 lines)
 ├── subagent.ts     # Sub-agent: 3 built-in + custom agent discovery         (199 lines)
 ├── skills.ts       # Skills system: discovery + inline/fork modes           (175 lines)
-├── session.ts      # Session persistence: save/load/list                    (63 lines)
+├── session.ts      # Session persistence: save/load/list                    (62 lines)
 ├── frontmatter.ts  # Shared YAML frontmatter parser                         (41 lines)
-                                                            Total: ~4291 lines
+                                                            Total: ~3855 lines
 ```
 
 ## Related Projects
 
 - **[how-claude-code-works](https://github.com/Windy3f3f3f3f/how-claude-code-works)** — Deep dive into Claude Code's architecture (12 articles, 330K+ characters)
+
+## Acknowledgements
+
+This project is forked from [Windy3f3f3f3f/claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch). Full credit to the original author [@Windy3f3f3f3f](https://github.com/Windy3f3f3f3f) for the excellent tutorial.
+
+## Star History
+
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=joinmouse/claude-code-mini&type=Date&theme=dark" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=joinmouse/claude-code-mini&type=Date" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=joinmouse/claude-code-mini&type=Date" width="600" />
+</picture>
+</div>
 
 ## License
 

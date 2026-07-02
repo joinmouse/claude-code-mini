@@ -91,7 +91,6 @@ With **~199 lines** in `subagent.ts` plus minor changes to the Agent class, we i
 
 ### 1. Agent Type Configuration -- `subagent.ts`
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 export type SubAgentType = "explore" | "plan" | "general";
@@ -104,18 +103,9 @@ function getReadOnlyTools(): ToolDef[] {
   return toolDefinitions.filter((t) => READ_ONLY_TOOLS.has(t.name));
 }
 ```
-#### **Python**
-```python
-READ_ONLY_TOOLS = {"read_file", "list_files", "grep_search"}
-
-def _get_read_only_tools() -> list[ToolDef]:
-    return [t for t in tool_definitions if t["name"] in READ_ONLY_TOOLS]
-```
-<!-- tabs:end -->
 
 Why is `run_shell` in the "read-only" tool set? Read-only commands like `git log`, `find`, and `wc` are essential for code exploration; completely prohibiting shell would severely weaken Explore's capabilities. Safety is ensured through system prompt constraints:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 const EXPLORE_PROMPT = `You are an Explore agent — a fast, READ-ONLY sub-agent...
@@ -128,21 +118,9 @@ IMPORTANT CONSTRAINTS:
 Be fast and thorough. Use multiple tool calls when possible.
 Return a concise summary of your findings.`;
 ```
-#### **Python**
-```python
-EXPLORE_PROMPT = """You are an Explore agent — a fast, READ-ONLY sub-agent specialized for codebase exploration.
-
-IMPORTANT CONSTRAINTS:
-- You are READ-ONLY. You only have access to read_file, list_files, and grep_search.
-- Do NOT attempt to modify any files.
-
-Be fast and thorough. Use multiple tool calls when possible. Return a concise summary of your findings."""
-```
-<!-- tabs:end -->
 
 The Plan Agent is also read-only, but its prompt guides it to produce structured plans:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 const PLAN_PROMPT = `You are a Plan agent — a READ-ONLY sub-agent specialized for designing implementation plans.
@@ -159,21 +137,9 @@ Return a structured plan with:
 3. Critical files for implementation
 4. Potential risks or considerations`;
 ```
-#### **Python**
-```python
-PLAN_PROMPT = """You are a Plan agent — a READ-ONLY sub-agent specialized for designing implementation plans.
-
-Return a structured plan with:
-1. Summary of current state
-2. Step-by-step implementation steps
-3. Critical files for implementation
-4. Potential risks or considerations"""
-```
-<!-- tabs:end -->
 
 The General Agent gets all tools except `agent`:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 const GENERAL_PROMPT = `You are a General sub-agent handling an independent task.
@@ -201,34 +167,11 @@ export function getSubAgentConfig(type: SubAgentType): SubAgentConfig {
   }
 }
 ```
-#### **Python**
-```python
-GENERAL_PROMPT = "You are a General sub-agent handling an independent task. Complete the assigned task and return a concise result. You have access to all tools."
-
-def get_sub_agent_config(agent_type: str) -> dict:
-    custom = _discover_custom_agents().get(agent_type)
-    if custom:
-        if custom["allowed_tools"]:
-            tools = [t for t in tool_definitions if t["name"] in custom["allowed_tools"]]
-        else:
-            tools = [t for t in tool_definitions if t["name"] != "agent"]
-        return {"system_prompt": custom["system_prompt"], "tools": tools}
-
-    read_only = [t for t in tool_definitions if t["name"] in READ_ONLY_TOOLS]
-    if agent_type == "explore":
-        return {"system_prompt": EXPLORE_PROMPT, "tools": read_only}
-    elif agent_type == "plan":
-        return {"system_prompt": PLAN_PROMPT, "tools": read_only}
-    else:
-        return {"system_prompt": GENERAL_PROMPT, "tools": [t for t in tool_definitions if t["name"] != "agent"]}
-```
-<!-- tabs:end -->
 
 ### 2. Agent Tool Definition -- `tools.ts`
 
 `agent` is registered as a regular tool. `type` is not required -- when the LLM is unsure, it can omit it and fall back to `general`:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 {
@@ -252,23 +195,6 @@ def get_sub_agent_config(agent_type: str) -> dict:
   },
 }
 ```
-#### **Python**
-```python
-{
-    "name": "agent",
-    "description": "Launch a sub-agent to handle a task autonomously. Types: 'explore' (read-only), 'plan' (read-only, structured planning), 'general' (full tools).",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "description": {"type": "string", "description": "Short (3-5 word) description of the sub-agent's task"},
-            "prompt": {"type": "string", "description": "Detailed task instructions for the sub-agent"},
-            "type": {"type": "string", "enum": ["explore", "plan", "general"], "description": "Agent type. Default: general"},
-        },
-        "required": ["description", "prompt"],
-    },
-}
-```
-<!-- tabs:end -->
 
 ### 3. Agent Class Modifications -- `agent.ts`
 
@@ -276,7 +202,6 @@ Only 4 changes are needed to make the same Agent class serve both the main Agent
 
 #### 3a. Constructor: Accept Custom Configuration
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 interface AgentOptions {
@@ -293,22 +218,6 @@ constructor(options: AgentOptions = {}) {
   // ...
 }
 ```
-#### **Python**
-```python
-class Agent:
-    def __init__(
-        self,
-        *,
-        # ...
-        custom_system_prompt: str | None = None,
-        custom_tools: list[ToolDef] | None = None,
-        is_sub_agent: bool = False,
-    ):
-        self.is_sub_agent = is_sub_agent
-        self.tools = custom_tools or tool_definitions
-        self._base_system_prompt = custom_system_prompt or build_system_prompt()
-```
-<!-- tabs:end -->
 
 When `customTools` is `None`, it falls back to the full tool list, with zero impact on the main Agent.
 
@@ -316,7 +225,6 @@ When `customTools` is `None`, it falls back to the full tool list, with zero imp
 
 Sub-agent text output can't be printed directly; it needs to be collected and returned to the main Agent:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 private outputBuffer: string[] | null = null;
@@ -329,23 +237,11 @@ private emitText(text: string): void {
   }
 }
 ```
-#### **Python**
-```python
-self._output_buffer: list[str] | None = None
-
-def _emit_text(self, text: str) -> None:
-    if self._output_buffer is not None:
-        self._output_buffer.append(text)
-    else:
-        print_assistant_text(text)
-```
-<!-- tabs:end -->
 
 `outputBuffer` has three states: `null` = main Agent mode (print directly), `[]` = sub-agent mode (start collecting), `[...]` = accumulating. The streaming callback only needs to call `emitText`, completely unaware of which mode it's running in.
 
 #### 3c. runOnce: One-Shot Execution Entry Point
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 async runOnce(prompt: string): Promise<{ text: string; tokens: { input: number; output: number } }> {
@@ -364,30 +260,11 @@ async runOnce(prompt: string): Promise<{ text: string; tokens: { input: number; 
   };
 }
 ```
-#### **Python**
-```python
-async def run_once(self, prompt: str) -> dict:
-    self._output_buffer = []
-    prev_in = self.total_input_tokens
-    prev_out = self.total_output_tokens
-    await self.chat(prompt)
-    text = "".join(self._output_buffer)
-    self._output_buffer = None
-    return {
-        "text": text,
-        "tokens": {
-            "input": self.total_input_tokens - prev_in,
-            "output": self.total_output_tokens - prev_out,
-        },
-    }
-```
-<!-- tabs:end -->
 
 Tokens are calculated incrementally (post-run minus pre-run) because the Agent instance's counters are cumulative. `chat()` is fully reused -- it doesn't care whether it's running in the main Agent or a sub-agent, since the tool set and output destination were already configured in the constructor.
 
 #### 3d. executeAgentTool: Execute Sub-Agent
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 private async executeAgentTool(input: Record<string, any>): Promise<string> {
@@ -418,35 +295,6 @@ private async executeAgentTool(input: Record<string, any>): Promise<string> {
   }
 }
 ```
-#### **Python**
-```python
-async def _execute_agent_tool(self, inp: dict) -> str:
-    agent_type = inp.get("type", "general")
-    description = inp.get("description", "sub-agent task")
-    prompt = inp.get("prompt", "")
-
-    print_sub_agent_start(agent_type, description)
-
-    config = get_sub_agent_config(agent_type)
-    sub_agent = Agent(
-        model=self.model,
-        custom_system_prompt=config["system_prompt"],
-        custom_tools=config["tools"],
-        is_sub_agent=True,
-        permission_mode="plan" if self.permission_mode == "plan" else "bypassPermissions",
-    )
-
-    try:
-        result = await sub_agent.run_once(prompt)
-        self.total_input_tokens += result["tokens"]["input"]
-        self.total_output_tokens += result["tokens"]["output"]
-        print_sub_agent_end(agent_type, description)
-        return result["text"] or "(Sub-agent produced no output)"
-    except Exception as e:
-        print_sub_agent_end(agent_type, description)
-        return f"Sub-agent error: {e}"
-```
-<!-- tabs:end -->
 
 When a sub-agent errors, it returns an error string rather than crashing the parent Agent -- the parent Agent's LLM sees the error message and can decide on its own whether to retry or try a different strategy.
 
@@ -454,7 +302,6 @@ Permission inheritance: Sub-agents default to `bypassPermissions` (the main Agen
 
 The `agent` tool requires special dispatch because it needs access to the current Agent instance's state (model, permissionMode, token counters) and can't go through the stateless generic dispatch function:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 private async executeToolCall(name: string, input: Record<string, any>): Promise<string> {
@@ -464,22 +311,11 @@ private async executeToolCall(name: string, input: Record<string, any>): Promise
   return executeTool(name, input);
 }
 ```
-#### **Python**
-```python
-async def _execute_tool_call(self, name: str, inp: dict) -> str:
-    if name == "agent":
-        return await self._execute_agent_tool(inp)
-    if name == "skill":
-        return await self._execute_skill_tool(inp)
-    return await execute_tool(name, inp)
-```
-<!-- tabs:end -->
 
 ### 4. The isSubAgent Flag
 
 Sub-agents skip three operations that are only meaningful for the main Agent:
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 if (!this.isSubAgent) {
@@ -491,16 +327,6 @@ if (!this.isSubAgent) {
   printCost(this.totalInputTokens, this.totalOutputTokens);
 }
 ```
-#### **Python**
-```python
-if not self.is_sub_agent:
-    print_divider()
-    self._auto_save()
-
-if not self.is_sub_agent:
-    print_cost(self.total_input_tokens, self.total_output_tokens)
-```
-<!-- tabs:end -->
 
 - Dividers: Sub-agent output is captured by the buffer and won't appear in the terminal
 - Session saving: Sub-agents are one-time tasks; saving their session is pointless and could overwrite the main Agent's file
@@ -508,7 +334,6 @@ if not self.is_sub_agent:
 
 ### 5. Terminal UI -- `ui.ts`
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 export function printSubAgentStart(type: string, description: string) {
@@ -519,15 +344,6 @@ export function printSubAgentEnd(type: string, description: string) {
   console.log(chalk.magenta(`  └─ Sub-agent [${type}] completed`));
 }
 ```
-#### **Python**
-```python
-def print_sub_agent_start(agent_type: str, description: str) -> None:
-    console.print(f"\n  [magenta]┌─ Sub-agent [{agent_type}]: {description}[/magenta]")
-
-def print_sub_agent_end(agent_type: str, _description: str) -> None:
-    console.print(f"  [magenta]└─ Sub-agent [{agent_type}] completed[/magenta]")
-```
-<!-- tabs:end -->
 
 ### 6. Custom Agent Types: `.claude/agents/*.md`
 

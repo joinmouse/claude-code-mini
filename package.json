@@ -19,11 +19,16 @@
     "llm"
   ],
   "license": "MIT",
+  "author": "joinmouse",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joinmouse/claude-code-mini.git"
+  },
+  "homepage": "https://github.com/joinmouse/claude-code-mini",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
     "chalk": "^5.4.1",
-    "glob": "^11.0.1",
-    "openai": "^6.33.0"
+    "glob": "^11.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

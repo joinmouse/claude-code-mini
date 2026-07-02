@@ -15,7 +15,6 @@ interface SessionMetadata {
 interface SessionData {
   metadata: SessionMetadata;
   anthropicMessages?: any[];
-  openaiMessages?: any[];
 }
 
 function ensureDir() {

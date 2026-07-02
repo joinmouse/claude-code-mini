@@ -78,7 +78,6 @@ type: feedback
 
 记忆和技能都要解析 YAML frontmatter，抽出 `frontmatter.ts`：
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // frontmatter.ts
@@ -106,49 +105,11 @@ export function parseFrontmatter(content: string): FrontmatterResult {
   return { meta, body };
 }
 ```
-#### **Python**
-```python
-# frontmatter.py
-
-@dataclass
-class FrontmatterResult:
-    meta: dict[str, str] = field(default_factory=dict)
-    body: str = ""
-
-
-def parse_frontmatter(content: str) -> FrontmatterResult:
-    lines = content.split("\n")
-    if not lines or lines[0].strip() != "---":
-        return FrontmatterResult(body=content)
-
-    end_idx = -1
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            end_idx = i
-            break
-    if end_idx == -1:
-        return FrontmatterResult(body=content)
-
-    meta: dict[str, str] = {}
-    for i in range(1, end_idx):
-        colon_idx = lines[i].find(":")
-        if colon_idx == -1:
-            continue
-        key = lines[i][:colon_idx].strip()
-        value = lines[i][colon_idx + 1:].strip()
-        if key:
-            meta[key] = value
-
-    body = "\n".join(lines[end_idx + 1:]).strip()
-    return FrontmatterResult(meta=meta, body=body)
-```
-<!-- tabs:end -->
 
 没有用 `js-yaml` 之类的库——我们的 frontmatter 只是简单的 `key: value`，20 行手写解析器够用且零依赖。
 
 ### 保存与索引
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // memory.ts — saveMemory
@@ -174,34 +135,11 @@ function updateMemoryIndex(): void {
   writeFileSync(getIndexPath(), lines.join("\n"));
 }
 ```
-#### **Python**
-```python
-# memory.py — save_memory
-
-def save_memory(name: str, description: str, type: str, content: str) -> str:
-    d = get_memory_dir()
-    filename = f"{type}_{_slugify(name)}.md"
-    text = format_frontmatter(
-        {"name": name, "description": description, "type": type}, content
-    )
-    (d / filename).write_text(text)
-    _update_memory_index()
-    return filename
-
-def _update_memory_index() -> None:
-    memories = list_memories()
-    lines = ["# Memory Index", ""]
-    for m in memories:
-        lines.append(f"- **[{m.name}]({m.filename})** ({m.type}) — {m.description}")
-    _get_index_path().write_text("\n".join(lines))
-```
-<!-- tabs:end -->
 
 文件名格式 `{type}_{slugified_name}.md` 让文件系统排序时自动按类型分组，人眼扫描也一目了然。每次写入后立即重建索引，保持 MEMORY.md 与文件系统同步。
 
 ### 索引截断
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // memory.ts — loadMemoryIndex
@@ -223,26 +161,6 @@ export function loadMemoryIndex(): string {
   return content;
 }
 ```
-#### **Python**
-```python
-# memory.py — load_memory_index
-
-MAX_INDEX_LINES = 200
-MAX_INDEX_BYTES = 25000
-
-def load_memory_index() -> str:
-    index_path = _get_index_path()
-    if not index_path.exists():
-        return ""
-    content = index_path.read_text()
-    lines = content.split("\n")
-    if len(lines) > MAX_INDEX_LINES:
-        content = "\n".join(lines[:MAX_INDEX_LINES]) + "\n\n[... truncated, too many memory entries ...]"
-    if len(content.encode()) > MAX_INDEX_BYTES:
-        content = content[:MAX_INDEX_BYTES] + "\n\n[... truncated, index too large ...]"
-    return content
-```
-<!-- tabs:end -->
 
 两层截断各有用途：行截断（200 行）是正常防护，按完整条目截断；字节截断（25KB）是异常防御，捕捉行数不多但单行极长的情况——Claude Code 团队在生产中见过 197KB 塞在 200 行内的案例。
 
@@ -250,7 +168,6 @@ def load_memory_index() -> str:
 
 `buildMemoryPromptSection()` 生成注入到 system prompt 的文本，告诉模型记忆系统的存在和用法：
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 // memory.ts — buildMemoryPromptSection（简化展示）
@@ -284,60 +201,20 @@ Filename format: \`{type}_{slugified_name}.md\`
 ${index ? `## Current Memory Index\n${index}` : "(No memories saved yet.)"}`;
 }
 ```
-#### **Python**
-```python
-# memory.py — build_memory_prompt_section（简化展示）
-
-def build_memory_prompt_section() -> str:
-    index = load_memory_index()
-    memory_dir = str(get_memory_dir())
-
-    return f"""# Memory System
-
-You have a persistent, file-based memory system at `{memory_dir}`.
-
-## Memory Types
-- **user**: User's role, preferences, knowledge level
-- **feedback**: Corrections and guidance from the user
-- **project**: Ongoing work, goals, deadlines, decisions
-- **reference**: Pointers to external resources
-
-## How to Save Memories
-Use the write_file tool to create a memory file with YAML frontmatter:
-...
-Save to: `{memory_dir}/`
-Filename format: `{{type}}_{{slugified_name}}.md`
-
-## What NOT to Save
-- Code patterns or architecture (read the code instead)
-- Git history (use git log)
-- Anything already in CLAUDE.md
-- Ephemeral task details
-
-{"## Current Memory Index" + chr(10) + index if index else "(No memories saved yet.)"}"""
-```
-<!-- tabs:end -->
 
 这段 prompt 做了三件事：教模型分类（四种类型）、教模型操作（用 `write_file`、存到哪里、什么格式）、教模型克制（"What NOT to Save"）。"让模型使用记忆"不只是给它一个工具，还要在 prompt 中描述完整的类型体系和边界，模型才能做出好的决策。
 
 最后在 `prompt.ts` 中通过占位符注入：
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 systemPrompt = systemPrompt.replace("{{memory}}", buildMemoryPromptSection());
 ```
-#### **Python**
-```python
-result = result.replace("{{memory}}", build_memory_prompt_section())
-```
-<!-- tabs:end -->
 
 ### CLI 交互
 
 用户在 REPL 中输入 `/memory` 可以列出所有记忆：
 
-<!-- tabs:start -->
 #### **TypeScript**
 ```typescript
 if (input === "/memory") {
@@ -352,19 +229,6 @@ if (input === "/memory") {
   }
 }
 ```
-#### **Python**
-```python
-if inp == "/memory":
-    memories = list_memories()
-    if not memories:
-        print_info("No memories saved yet.")
-    else:
-        print_info(f"{len(memories)} memories:")
-        for m in memories:
-            print(f"    [{m.type}] {m.name} — {m.description}")
-    continue
-```
-<!-- tabs:end -->
 
 ---
 

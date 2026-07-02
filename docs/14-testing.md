@@ -6,7 +6,7 @@
 
 ```mermaid
 graph LR
-    Setup["bash test/setup.sh"] --> Build["npm run build（TS 版）"]
+    Setup["bash test/setup.sh"] --> Build["npm run build"]
     Build --> Test["逐项测试"]
     Test --> Cleanup["bash test/cleanup.sh"]
 
@@ -33,7 +33,7 @@ cd claude-code-from-scratch
 # 一键配置测试环境（MCP、Skills、CLAUDE.md、大文件、引号测试文件、自定义 Agent）
 bash test/setup.sh
 
-# 构建 TS 版（Python 版无需构建）
+# 构建项目
 npm run build
 ```
 
@@ -43,12 +43,8 @@ ANTHROPIC_API_KEY=sk-xxx
 ANTHROPIC_BASE_URL=https://aihubmix.com   # 可选
 ```
 
-> **提示**：如果系统环境里同时有 `OPENAI_API_KEY` + `OPENAI_BASE_URL` 和 `ANTHROPIC_API_KEY`，
-> 会优先走 OpenAI 兼容路径。两种路径都支持全部功能。
-
 ## 启动方式
 
-**TS 版**：
 ```bash
 # 交互式 REPL（推荐，能测 skill、plan mode 和 REPL 命令）
 node dist/cli.js --yolo
@@ -56,16 +52,6 @@ node dist/cli.js --yolo
 # one-shot 模式
 node dist/cli.js --yolo "你的提示词"
 ```
-
-**Python 版**：
-```bash
-python -m mini_claude --yolo
-
-# one-shot 模式
-python -m mini_claude --yolo "你的提示词"
-```
-
-> 以下测试步骤中的命令行示例以 TS 版为例，Python 版将 `node dist/cli.js` 替换为 `python -m mini_claude` 即可，功能完全一致。
 
 ---
 
@@ -115,11 +101,6 @@ Fetch https://example.com and tell me what the page is about.
 
 ```
 Read the files src/frontmatter.ts, src/session.ts, and src/skills.ts at the same time, then tell me each file's line count.
-```
-
-Python 版可改为读取 Python 文件：
-```
-Read the files python/mini_claude/frontmatter.py and python/mini_claude/session.py at the same time, then tell me each file's line count.
 ```
 
 ✅ 预期：多个 `read_file` 调用同时出现（不是一个一个来的）
@@ -392,7 +373,7 @@ Use edit_file on test/quote-test.js. In the old_string, use curly double quotes 
 Edit test/quote-test.js, replace "Hi Universe" with "Hello World"
 ```
 
-**设计意图**：LLM 输出和用户从文档复制的文本经常包含 Unicode 弯引号（`""`、`''`）。Claude Code 的 `normalizeQuotes` 函数先尝试精确匹配，失败后将两边都规范化为直引号再匹配，避免"找不到要替换的内容"的常见报错。
+**设计意图**：LLM 输出和用户从文档复制的文本经常包含 Unicode 弯引号（`“”`、`‘’`）。Claude Code 的 `normalizeQuotes` 函数先尝试精确匹配，失败后将两边都规范化为直引号再匹配，避免"找不到要替换的内容"的常见报错。
 
 ---
 
@@ -457,8 +438,7 @@ Create a file test/tmp/long-file.txt with 50 numbered lines like "Line 1: test d
 
 **第一次会话**：
 ```bash
-node dist/cli.js --yolo          # TS 版
-python -m mini_claude --yolo     # Python 版
+node dist/cli.js --yolo
 ```
 ```
 Remember this: The secret code is BANANA-42. Read package.json and tell me the version.
@@ -467,8 +447,7 @@ Remember this: The secret code is BANANA-42. Read package.json and tell me the v
 
 **第二次会话（恢复）**：
 ```bash
-node dist/cli.js --yolo --resume          # TS 版
-python -m mini_claude --yolo --resume     # Python 版
+node dist/cli.js --yolo --resume
 ```
 
 ✅ 预期：启动时显示 session restored 信息
@@ -481,15 +460,14 @@ What was the secret code I told you earlier?
 
 **对比（新会话）**：
 ```bash
-node dist/cli.js --yolo          # TS 版
-python -m mini_claude --yolo     # Python 版
+node dist/cli.js --yolo
 ```
 ```
 What was the secret code I told you earlier?
 ```
 ✅ 预期：模型无法回答
 
-**设计意图**：会话以 JSON 格式存储在 `~/.mini-claude/sessions/`，包含 Anthropic 和 OpenAI 两套消息历史（因为两个后端的消息格式不同）。`--resume` 自动找到最近的 session，恢复后继续对话。
+**设计意图**：会话以 JSON 格式存储在 `~/.mini-claude/sessions/`，包含 Anthropic 消息历史。`--resume` 自动找到最近的 session，恢复后继续对话。
 
 ---
 
@@ -498,10 +476,7 @@ What was the secret code I told you earlier?
 **测试目标**：验证传入 prompt 参数时自动执行并退出。
 
 ```bash
-# TS 版
 node dist/cli.js --yolo "Read the file package.json and tell me the project name. Only output the name."
-# Python 版
-python -m mini_claude --yolo "Read the file package.json and tell me the project name. Only output the name."
 ```
 
 ✅ 预期：
@@ -527,10 +502,7 @@ node dist/cli.js --yolo "Read the file /nonexistent/path/file.txt"
 **测试目标**：验证 agent 循环次数限制。
 
 ```bash
-# TS 版
 node dist/cli.js --yolo --max-turns 2 "Read these files one by one: package.json, tsconfig.json, src/cli.ts, src/agent.ts, src/tools.ts. Tell me the line count of each."
-# Python 版
-python -m mini_claude --yolo --max-turns 2 "Read these files one by one: package.json, tsconfig.json, src/cli.ts, src/agent.ts, src/tools.ts. Tell me the line count of each."
 ```
 
 ✅ 预期：
@@ -542,61 +514,39 @@ python -m mini_claude --yolo --max-turns 2 "Read these files one by one: package
 
 ---
 
-## Phase 7: 扩展系统 (Test 19)
+## 清理
 
-### 19. 自定义 Agent（.claude/agents/）
-
-**测试目标**：验证用户定义的 agent 类型被正确发现和使用。
-
-```
-What agent types are available? List them all.
-```
-
-✅ 预期：列表中包含 explore、plan、general 和 **reviewer**
-
-```
-Use the agent tool with type "reviewer" to review the file src/frontmatter.ts
-```
-
-✅ 预期：
-- 输出显示 `[sub-agent:reviewer]` 标记
-- reviewer 只使用 read_file / list_files / grep_search（受 allowed-tools 限制）
-- 返回代码审查结果
-
-**设计意图**：自定义 agent 通过 `.claude/agents/*.md` 文件定义，frontmatter 指定名称、描述和允许使用的工具。这让用户可以创建专用 agent（代码审查、文档生成、测试编写等），不用改源码。Claude Code 同样支持用户级（`~/.claude/agents/`）和项目级（`.claude/agents/`）两层覆盖。
-
----
-
-## 测试完成
+测试完成后恢复环境：
 
 ```bash
 bash test/cleanup.sh
 ```
 
-清理所有测试产生的文件（MCP 配置、skills、rules、记忆文件、自定义 agent、临时文件等）。
+---
+
+## 测试覆盖矩阵
+
+| 测试 | 验证功能 | 涉及源码 |
+|------|---------|---------|
+| 1 | MCP 集成 | `mcp.ts` |
+| 2 | WebFetch | `tools.ts` |
+| 3 | 并行工具执行 | `agent.ts` + `tools.ts` |
+| 4 | 语义记忆召回 | `memory.ts` |
+| 5 | @include + Rules | `prompt.ts` |
+| 6 | Read-before-edit | `tools.ts` |
+| 7 | 大结果持久化 | `agent.ts` |
+| 8 | Skill 调用 | `skills.ts` |
+| 9 | ToolSearch 延迟加载 | `tools.ts` |
+| 10 | REPL 命令 | `cli.ts` |
+| 11 | Sub-agent | `subagent.ts` + `agent.ts` |
+| 12 | Plan Mode | `agent.ts` + `tools.ts` + `cli.ts` |
+| 13 | 引号规范化 | `tools.ts` |
+| 17 | Grep Search | `tools.ts` |
+| 18 | Write File | `tools.ts` |
+| 14 | Session Resume | `session.ts` |
+| 15 | One-shot 模式 | `cli.ts` |
+| 16 | 预算控制 | `agent.ts` + `cli.ts` |
 
 ---
 
-## 快速对照表
-
-| # | 功能 | 类别 | TS 通过 | PY 通过 | 备注 |
-|---|------|------|:---:|:---:|------|
-| 1 | MCP 工具调用 | 基础工具 | ☐ | ☐ | 3 个工具 |
-| 2 | WebFetch | 基础工具 | ☐ | ☐ | httpbin.org |
-| 3 | 并行工具执行 | 基础工具 | ☐ | ☐ | 多文件同时读 |
-| 4 | 语义记忆召回 | 记忆上下文 | ☐ | ☐ | 保存→新对话→语义查询 |
-| 5 | @include + Rules | 记忆上下文 | ☐ | ☐ | 中文回复 |
-| 6 | Read-before-edit | 记忆上下文 | ☐ | ☐ | 代码层或 prompt 层 |
-| 7 | 大结果持久化 | 记忆上下文 | ☐ | ☐ | 75KB 文件 |
-| 8 | Skill 调用 | 技能扩展 | ☐ | ☐ | /greet /commit |
-| 9 | ToolSearch | 技能扩展 | ☐ | ☐ | plan mode 工具 |
-| 10 | REPL 命令 | 技能扩展 | ☐ | ☐ | /cost /memory /compact /plan |
-| 11 | Sub-agent 系统 | Agent 架构 | ☐ | ☐ | explore/plan/general |
-| 12 | Plan Mode | Agent 架构 | ☐ | ☐ | /plan 手动进入 + 审批 |
-| 13 | 引号规范化 | 编辑搜索 | ☐ | ☐ | curly → straight quotes |
-| 14 | Session Resume | 会话 CLI | ☐ | ☐ | --resume 恢复会话 |
-| 15 | One-shot 模式 | 会话 CLI | ☐ | ☐ | 传 prompt 自动退出 |
-| 16 | 预算控制 | 会话 CLI | ☐ | ☐ | --max-turns 限制 |
-| 17 | Grep Search | 编辑搜索 | ☐ | ☐ | 正则搜索 + include |
-| 18 | Write File | 编辑搜索 | ☐ | ☐ | 新文件 + 自动建目录 |
-| 19 | 自定义 Agent | 扩展系统 | ☐ | ☐ | .claude/agents/ 定义 |
+> **下一章**：到此教程结束。回顾整体架构，看看从 ~3400 行到 50 万行的差距在哪里，以及如何继续扩展。
