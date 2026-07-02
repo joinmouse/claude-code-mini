@@ -287,23 +287,16 @@ async function runRepl(agent: Agent) {
 async function main() {
   const { permissionMode, model, prompt, resume, thinking, maxCost, maxTurns } = parseArgs();
 
-  // Resolve API config from env vars
-  const resolvedApiKey = process.env.ANTHROPIC_API_KEY;
-  let resolvedBaseURL: string | undefined;
-
-  if (process.env.ANTHROPIC_BASE_URL) {
-    resolvedBaseURL = process.env.ANTHROPIC_BASE_URL;
-  }
-
-  if (!resolvedApiKey) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
     printError("ANTHROPIC_API_KEY environment variable is required.");
     process.exit(1);
   }
 
   const agent = new Agent({
     permissionMode, model, thinking, maxCostUsd: maxCost, maxTurns,
-    baseURL: resolvedBaseURL,
-    apiKey: resolvedApiKey,
+    apiKey,
+    baseURL: process.env.ANTHROPIC_BASE_URL,
   });
 
   // Resume session if requested

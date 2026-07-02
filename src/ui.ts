@@ -188,9 +188,7 @@ function getToolIcon(name: string): string {
 function getToolSummary(name: string, input: Record<string, any>): string {
   switch (name) {
     case "read_file":
-      return input.file_path;
     case "write_file":
-      return input.file_path;
     case "edit_file":
       return input.file_path;
     case "list_files":

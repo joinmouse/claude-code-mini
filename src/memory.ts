@@ -110,7 +110,7 @@ export function deleteMemory(filename: string): boolean {
 
 // ─── Index ──────────────────────────────────────────────────
 
-function updateMemoryIndex(): void {
+export function updateMemoryIndex(): void {
   const memories = listMemories();
   const lines = ["# Memory Index", ""];
   for (const m of memories) {
@@ -194,15 +194,19 @@ export function formatMemoryManifest(headers: MemoryHeader[]): string {
 
 // ─── Memory Age / Freshness ────────────────────────────────
 
+function daysSince(mtimeMs: number): number {
+  return Math.max(0, Math.floor((Date.now() - mtimeMs) / 86_400_000));
+}
+
 export function memoryAge(mtimeMs: number): string {
-  const days = Math.max(0, Math.floor((Date.now() - mtimeMs) / 86_400_000));
+  const days = daysSince(mtimeMs);
   if (days === 0) return "today";
   if (days === 1) return "yesterday";
   return `${days} days ago`;
 }
 
 export function memoryFreshnessWarning(mtimeMs: number): string {
-  const days = Math.max(0, Math.floor((Date.now() - mtimeMs) / 86_400_000));
+  const days = daysSince(mtimeMs);
   if (days <= 1) return "";
   return `This memory is ${days} days old. Memories are point-in-time observations, not live state — claims about code behavior may be outdated. Verify against current code before asserting as fact.`;
 }

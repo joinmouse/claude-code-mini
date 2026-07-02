@@ -5,7 +5,7 @@ import { dirname, join, basename, extname, resolve } from "path";
 import { homedir } from "os";
 
 const isWin = process.platform === "win32";
-import { getMemoryDir } from "./memory.js";
+import { getMemoryDir, updateMemoryIndex } from "./memory.js";
 import type Anthropic from "@anthropic-ai/sdk";
 // Note: skill execution is handled in agent.ts (supports fork mode)
 
@@ -309,25 +309,7 @@ function autoUpdateMemoryIndex(filePath: string): void {
   try {
     const memDir = getMemoryDir();
     if (filePath.startsWith(memDir) && filePath.endsWith(".md") && !filePath.endsWith("MEMORY.md")) {
-      // Re-import dynamically to avoid circular — but we already import getMemoryDir
-      // Rebuild the index from all memory files
-      const { readdirSync } = require("fs");
-      const files = readdirSync(memDir).filter(
-        (f: string) => f.endsWith(".md") && f !== "MEMORY.md"
-      );
-      const lines = ["# Memory Index", ""];
-      for (const file of files) {
-        try {
-          const raw = readFileSync(join(memDir, file), "utf-8");
-          const nameMatch = raw.match(/^name:\s*(.+)$/m);
-          const typeMatch = raw.match(/^type:\s*(.+)$/m);
-          const descMatch = raw.match(/^description:\s*(.+)$/m);
-          if (nameMatch && typeMatch) {
-            lines.push(`- **[${nameMatch[1].trim()}](${file})** (${typeMatch[1].trim()}) — ${descMatch?.[1]?.trim() || ""}`);
-          }
-        } catch { /* skip */ }
-      }
-      writeFileSync(join(memDir, "MEMORY.md"), lines.join("\n"));
+      updateMemoryIndex();
     }
   } catch { /* non-critical */ }
 }
@@ -691,18 +673,7 @@ export function checkPermission(
   return { action: "allow" };
 }
 
-// Legacy exports for backward compatibility
-export function needsConfirmation(
-  toolName: string,
-  input: Record<string, any>
-): string | null {
-  const result = checkPermission(toolName, input);
-  if (result.action === "confirm") return result.message || null;
-  return null;
-}
-
-// ─── Truncate long tool results ─────────────────────────────
-
+// ─── Truncate long tool results ─────────────────────────
 const MAX_RESULT_CHARS = 50000;
 
 function truncateResult(result: string): string {
@@ -717,8 +688,28 @@ function truncateResult(result: string): string {
   );
 }
 
-// ─── Execute a tool call ────────────────────────────────────
+// ─── Execute a tool call ─────────────────────────────────
 // The "agent" tool is handled in agent.ts to avoid circular deps.
+
+/** Verify a file was read before write/edit and hasn't been modified externally. */
+function checkFileFreshness(
+  absPath: string,
+  filePath: string,
+  action: "writing" | "editing",
+  readFileState?: Map<string, number>
+): string | null {
+  if (!readFileState || !existsSync(absPath)) return null;
+  if (!readFileState.has(absPath)) {
+    return `Error: You must read this file before ${action}. Use read_file first to see its current contents.`;
+  }
+  try {
+    const cur = statSync(absPath).mtimeMs;
+    if (cur !== readFileState.get(absPath)!) {
+      return `Warning: ${filePath} was modified externally since your last read. Please read_file again before ${action}.`;
+    }
+  } catch {}
+  return null;
+}
 
 export async function executeTool(
   name: string,
@@ -737,17 +728,8 @@ export async function executeTool(
       break;
     case "write_file": {
       const absPath = resolve(input.file_path);
-      // Existing files require a prior read; new files skip the check
-      if (readFileState && existsSync(absPath)) {
-        if (!readFileState.has(absPath)) {
-          return "Error: You must read this file before writing. Use read_file first to see its current contents.";
-        }
-        const cur = statSync(absPath).mtimeMs;
-        const rec = readFileState.get(absPath)!;
-        if (cur !== rec) {
-          return `Warning: ${input.file_path} was modified externally since your last read. Please read_file again before writing.`;
-        }
-      }
+      const staleErr = checkFileFreshness(absPath, input.file_path, "writing", readFileState);
+      if (staleErr) return staleErr;
       result = writeFile(input as { file_path: string; content: string });
       if (readFileState && !result.startsWith("Error")) {
         try { readFileState.set(absPath, statSync(absPath).mtimeMs); } catch {}
@@ -756,16 +738,8 @@ export async function executeTool(
     }
     case "edit_file": {
       const absPath = resolve(input.file_path);
-      if (readFileState && existsSync(absPath)) {
-        if (!readFileState.has(absPath)) {
-          return "Error: You must read this file before editing. Use read_file first to see its current contents.";
-        }
-        const cur = statSync(absPath).mtimeMs;
-        const rec = readFileState.get(absPath)!;
-        if (cur !== rec) {
-          return `Warning: ${input.file_path} was modified externally since your last read. Please read_file again before editing.`;
-        }
-      }
+      const staleErr = checkFileFreshness(absPath, input.file_path, "editing", readFileState);
+      if (staleErr) return staleErr;
       result = editFile(
         input as { file_path: string; old_string: string; new_string: string }
       );
@@ -773,8 +747,7 @@ export async function executeTool(
         try { readFileState.set(absPath, statSync(absPath).mtimeMs); } catch {}
       }
       break;
-    }
-    case "list_files":
+    }    case "list_files":
       result = await listFiles(input as { pattern: string; path?: string });
       break;
     case "grep_search":

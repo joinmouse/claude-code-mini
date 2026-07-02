@@ -129,7 +129,6 @@ interface AgentOptions {
 export class Agent {
   private anthropicClient: Anthropic;
   private permissionMode: PermissionMode;
-  private thinking: boolean;
   private thinkingMode: "adaptive" | "enabled" | "disabled";
   private model: string;
   private systemPrompt: string;
@@ -192,9 +191,8 @@ export class Agent {
     // Permission mode: explicit mode > yolo legacy > default
     this.permissionMode = options.permissionMode
       || (options.yolo ? "bypassPermissions" : "default");
-    this.thinking = options.thinking || false;
     this.model = options.model || "claude-opus-4-6";
-    this.thinkingMode = this.resolveThinkingMode();
+    this.thinkingMode = this.resolveThinkingMode(options.thinking || false);
     this.isSubAgent = options.isSubAgent || false;
     this.tools = options.customTools || toolDefinitions;
     this.maxCostUsd = options.maxCostUsd;
@@ -219,8 +217,8 @@ export class Agent {
     });
   }
 
-  private resolveThinkingMode(): "adaptive" | "enabled" | "disabled" {
-    if (!this.thinking) return "disabled";
+  private resolveThinkingMode(thinking: boolean): "adaptive" | "enabled" | "disabled" {
+    if (!thinking) return "disabled";
     if (!modelSupportsThinking(this.model)) return "disabled";
     if (modelSupportsAdaptiveThinking(this.model)) return "adaptive";
     return "enabled";
@@ -371,8 +369,11 @@ export class Agent {
   }
 
   private checkBudget(): { exceeded: boolean; reason?: string } {
-    if (this.maxCostUsd !== undefined && this.getCurrentCostUsd() >= this.maxCostUsd) {
-      return { exceeded: true, reason: `Cost limit reached ($${this.getCurrentCostUsd().toFixed(4)} >= $${this.maxCostUsd})` };
+    if (this.maxCostUsd !== undefined) {
+      const cost = this.getCurrentCostUsd();
+      if (cost >= this.maxCostUsd) {
+        return { exceeded: true, reason: `Cost limit reached ($${cost.toFixed(4)} >= $${this.maxCostUsd})` };
+      }
     }
     if (this.maxTurns !== undefined && this.currentTurns >= this.maxTurns) {
       return { exceeded: true, reason: `Turn limit reached (${this.currentTurns} >= ${this.maxTurns})` };
@@ -821,8 +822,6 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
       );
     }
 
-    let firstIteration = true;
-
     while (true) {
       if (this.abortController?.signal.aborted) break;
 
@@ -962,8 +961,6 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
         this.anthropicMessages.push({ role: "user", content: toolResults });
       }
       this.contextCleared = false;
-
-      firstIteration = false;
     }
   }
 
