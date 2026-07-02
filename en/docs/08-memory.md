@@ -1,87 +1,69 @@
 # 8. Memory System
 
-## Chapter Goals
-
-Implement cross-session memory: let the Agent maintain awareness of the user and project across multiple conversations, without relying on conversation history.
+Cross-session memory: independent of conversation history, keeping the Agent's awareness of user and project across multiple sessions.
 
 ```mermaid
 graph TB
     Save[Save memory<br/>write_file → .md] --> Index[MEMORY.md index]
     Index --> Inject[Inject into system prompt]
     Query[User query] --> Prefetch[Async prefetch<br/>startMemoryPrefetch]
-    Prefetch --> SideQuery[sideQuery<br/>Semantically select relevant memories]
+    Prefetch --> SideQuery[sideQuery<br/>semantic selection]
     SideQuery --> Recall[Inject as user message]
 
     style SideQuery fill:#7c5cfc,color:#fff
     style Inject fill:#e8e0ff
 ```
 
----
+## Reference: Claude Code's Approach
 
-## How Claude Code Does It
+**Only hard constraint**: **Only remember information that cannot be derived from the current project state**. Anything derivable from code/architecture/git log will drift in memory. When the user says "remember this PR list," push back: what part of it is non-derivable?
 
-The core constraint of Claude Code's memory system boils down to one rule: **only remember information that cannot be derived from the current project state**. Code patterns, architecture, file paths, git history, ongoing debugging -- these can all be obtained by reading code and `git log`, and storing them in memory only creates drift. Even information the user explicitly asks to save is no exception -- if a user says "remember this PR list," the Agent should push back: what in this list is non-derivable? A specific deadline? An unexpected finding?
+**Four types** (closed classification, prevents label bloat):
 
-Memories are divided into four types:
+| Type | Records | Trigger |
+|------|---------|---------|
+| **user** | Identity/preferences/background | When learning about user role/preferences |
+| **feedback** | Corrections **+ affirmations** | When user corrects/affirms (must include Why + How to apply) |
+| **project** | Progress/decisions/deadlines (**relative → absolute dates**) | Project dynamics |
+| **reference** | External system pointers | When learning external locations |
 
-| Type | What to Remember | When to Trigger |
-|------|-----------------|----------------|
-| **user** | User identity, preferences, knowledge background | When learning about user role/preferences |
-| **feedback** | Corrections **and affirmations** of Agent behavior | When user corrects or affirms a behavior |
-| **project** | Project progress, decisions, deadlines | When learning about project dynamics |
-| **reference** | Locator information for external systems | When learning about external system locations |
+**MEMORY.md is an index, not a container** — fully loaded into sysprompt every session, must be compact; each entry one link line, body read on demand; 200 lines / 25KB dual truncation, over-limit prompts "keep entries under ~200 chars".
 
-A closed taxonomy rather than free-form tags -- to prevent tag proliferation that leads to fuzzy matching during recall.
+**`sideQuery` semantic recall** > keyword matching — "deployment flow" can match "CI/CD notes". Async prefetch (`pendingMemoryPrefetch`) runs in parallel with the first turn generation, zero user latency. Max 5 per shot, 60KB session budget.
 
-The `feedback` type has a nuance: it records not just corrections but also user affirmations. The reasoning is practical: only recording "mistakes" helps the model avoid repeating them, but may also inadvertently cause it to abandon practices the user has already validated as good. Both types also require the body to include `Why` and `How to apply` -- because knowing "why" is essential for judging edge cases; blindly following rules often backfires.
+**Freshness warning**: Memories >1 day old get age-annotated — memories are time-slices, not live state.
 
-The `project` type has a specific requirement: relative dates must be converted to absolute dates. "Merge freeze after Thursday" -> "Merge freeze after 2026-03-05." Memories may be read weeks later, when "Thursday" has become meaningless.
-
-**MEMORY.md is an index, not a container.** It's loaded in full into the system prompt every session, so it must be compact -- one line per entry with a link, actual content read on demand. It has dual truncation at 200 lines / 25KB, with an appended hint when exceeded: "keep index entries to one line under ~200 chars." Error messages include fix guidance -- a design habit that runs throughout the entire system.
-
-**The recall mechanism** uses `sideQuery` to call the model for semantic matching, rather than keyword search. When a user asks about "deployment process," semantic matching can find a memory titled "CI/CD Considerations," while keyword matching cannot. Recall executes asynchronously while the model starts generating its response (`pendingMemoryPrefetch`), so the delay is nearly zero from the user's perspective. Each recall returns at most 5 entries, keeping context cost controlled.
-
-Each memory also carries a **freshness warning** -- memories older than 1 day are annotated with how many days have passed, reminding the model that memories are point-in-time snapshots, not live state. A memory saying "deadline next week" would be misleading two weeks later if the model doesn't know it might be outdated.
-
----
-
-## Our Implementation
-
-### Storage Structure
+## Storage
 
 ```
 ~/.mini-claude/projects/{sha256-hash}/memory/
-├── MEMORY.md                          # Index file
+├── MEMORY.md
 ├── user_prefers_concise_output.md
 ├── feedback_no_summary_at_end.md
 ├── project_auth_migration_q2.md
 └── reference_ci_dashboard_url.md
 ```
 
-The hash in the path is the first 16 characters of the sha256 of `process.cwd()` -- the same project directory always maps to the same memory space.
+Hash = first 16 chars of sha256 of `process.cwd()`; same project directory → same memory space.
 
-### Memory File Format
+## Memory File Format
 
 ```markdown
 ---
 name: Don't summarize at the end of responses
-description: User explicitly asked to skip summary paragraphs
+description: User explicitly requested skipping summary paragraphs
 type: feedback
 ---
-User said "don't summarize at the end of responses" because they can review diffs and code changes themselves.
+User said "don't summarize at the end of responses" because they can read the diff and code changes themselves.
 
-**Why:** User finds summaries a waste of time and prefers getting results directly.
-**How to apply:** After completing a task, end immediately without adding "Summary" or "In summary..." paragraphs.
+**Why:** User feels summaries waste time.
+**How to apply:** After completing a task, end directly without a "Summary" or "Above is..." paragraph.
 ```
 
-### Frontmatter Parsing (Shared Module)
+## Frontmatter Parsing (shared)
 
-Both memory and skills need to parse YAML frontmatter, so it's extracted into `frontmatter.ts`:
-
-#### **TypeScript**
 ```typescript
 // frontmatter.ts
-
 export function parseFrontmatter(content: string): FrontmatterResult {
   const lines = content.split("\n");
   if (lines[0]?.trim() !== "---") return { meta: {}, body: content };
@@ -100,20 +82,16 @@ export function parseFrontmatter(content: string): FrontmatterResult {
     const value = lines[i].slice(colonIdx + 1).trim();
     if (key) meta[key] = value;
   }
-
-  const body = lines.slice(endIdx + 1).join("\n").trim();
-  return { meta, body };
+  return { meta, body: lines.slice(endIdx + 1).join("\n").trim() };
 }
 ```
 
-No library like `js-yaml` is used -- our frontmatter is just simple `key: value` pairs, and a 20-line hand-written parser is sufficient with zero dependencies.
+20 lines hand-written, sufficient with zero deps.
 
-### Saving and Indexing
+## Save & Index
 
-#### **TypeScript**
 ```typescript
-// memory.ts -- saveMemory
-
+// memory.ts
 export function saveMemory(entry: Omit<MemoryEntry, "filename">): string {
   const dir = getMemoryDir();
   const filename = `${entry.type}_${slugify(entry.name)}.md`;
@@ -136,19 +114,16 @@ function updateMemoryIndex(): void {
 }
 ```
 
-The filename format `{type}_{slugified_name}.md` makes files automatically group by type when sorted in the filesystem, and is easy to scan visually. The index is rebuilt immediately after each write to keep MEMORY.md in sync with the filesystem.
+`{type}_{slugified_name}.md` naming lets filesystem sorting auto-group by type.
 
-### Index Truncation
+## Index Truncation
 
-#### **TypeScript**
 ```typescript
-// memory.ts -- loadMemoryIndex
-
+// memory.ts
 const MAX_INDEX_LINES = 200;
 const MAX_INDEX_BYTES = 25000;
 
 export function loadMemoryIndex(): string {
-  // ...
   const lines = content.split("\n");
   if (lines.length > MAX_INDEX_LINES) {
     content = lines.slice(0, MAX_INDEX_LINES).join("\n") +
@@ -162,85 +137,57 @@ export function loadMemoryIndex(): string {
 }
 ```
 
-The two truncation layers serve different purposes: line truncation (200 lines) is normal protection, cutting at complete entry boundaries; byte truncation (25KB) is abnormal defense, catching cases where line count is low but individual lines are extremely long -- the Claude Code team has seen cases in production with 197KB crammed into 200 lines.
+Line truncation prevents too many entries; byte truncation prevents overly long single lines (CC has seen 197KB stuffed into 200 lines).
 
-### System Prompt Injection
+## System Prompt Injection
 
-`buildMemoryPromptSection()` generates text injected into the system prompt, telling the model about the memory system's existence and usage:
-
-#### **TypeScript**
 ```typescript
-// memory.ts -- buildMemoryPromptSection (simplified)
-
+// memory.ts
 export function buildMemoryPromptSection(): string {
   const index = loadMemoryIndex();
   const memoryDir = getMemoryDir();
-
   return `# Memory System
 
 You have a persistent, file-based memory system at \`${memoryDir}\`.
 
 ## Memory Types
-- **user**: User's role, preferences, knowledge level
-- **feedback**: Corrections and guidance from the user
-- **project**: Ongoing work, goals, deadlines, decisions
-- **reference**: Pointers to external resources
+- **user**, **feedback**, **project**, **reference**
 
-## How to Save Memories
-Use the write_file tool to create a memory file with YAML frontmatter:
-...
-Save to: \`${memoryDir}/\`
-Filename format: \`{type}_{slugified_name}.md\`
+## How to Save
+Use write_file with YAML frontmatter. Path: \`${memoryDir}/\`, filename: \`{type}_{slug}.md\`.
 
 ## What NOT to Save
-- Code patterns or architecture (read the code instead)
+- Code patterns or architecture (read code)
 - Git history (use git log)
 - Anything already in CLAUDE.md
 - Ephemeral task details
 
 ${index ? `## Current Memory Index\n${index}` : "(No memories saved yet.)"}`;
 }
-```
 
-This prompt does three things: teaches the model classification (four types), teaches it operations (use `write_file`, where to save, what format), and teaches it restraint ("What NOT to Save"). "Making the model use memory" isn't just about giving it a tool -- you also need to describe the complete type system and boundaries in the prompt so the model can make good decisions.
-
-Finally, it's injected in `prompt.ts` via a placeholder:
-
-#### **TypeScript**
-```typescript
+// prompt.ts
 systemPrompt = systemPrompt.replace("{{memory}}", buildMemoryPromptSection());
 ```
 
-### CLI Interaction
+Three things: teach classification, teach operation, teach restraint.
 
-Users can type `/memory` in the REPL to list all memories:
+## `/memory` REPL Command
 
-#### **TypeScript**
 ```typescript
 if (input === "/memory") {
   const memories = listMemories();
-  if (memories.length === 0) {
-    printInfo("No memories saved yet.");
-  } else {
+  if (memories.length === 0) printInfo("No memories saved yet.");
+  else {
     printInfo(`${memories.length} memories:`);
-    for (const m of memories) {
-      console.log(`    [${m.type}] ${m.name} — ${m.description}`);
-    }
+    for (const m of memories) console.log(`    [${m.type}] ${m.name} — ${m.description}`);
   }
 }
 ```
 
----
-
-### Semantic Recall (sideQuery)
-
-The early version used keyword matching for memory recall -- splitting the query into words and counting hits per memory entry for ranking. This was simple but limited: when a user asks about "deployment process," a memory titled "CI/CD Considerations" gets zero matches because there are no common keywords.
-
-The new version uses `sideQuery` for semantic recall: it sends all memory filenames and descriptions to the model and lets the model determine which ones are relevant to the current query.
+## Semantic Recall (sideQuery)
 
 ```typescript
-// memory.ts -- selectRelevantMemories
-
+// memory.ts
 const SELECT_MEMORIES_PROMPT = `You are selecting memories that will be useful to an AI coding assistant as it processes a user's query. You will be given the user's query and a list of available memory files with their filenames and descriptions.
 
 Return a JSON object with a "selected_memories" array of filenames for the memories that will clearly be useful (up to 5). Only include memories that you are certain will be helpful based on their name and description.
@@ -248,41 +195,27 @@ Return a JSON object with a "selected_memories" array of filenames for the memor
 - If no memories would clearly be useful, return an empty array.`;
 
 export async function selectRelevantMemories(
-  query: string,
-  sideQuery: SideQueryFn,
-  alreadySurfaced: Set<string>,
-  signal?: AbortSignal,
+  query: string, sideQuery: SideQueryFn,
+  alreadySurfaced: Set<string>, signal?: AbortSignal,
 ): Promise<RelevantMemory[]> {
   const headers = scanMemoryHeaders();
   if (headers.length === 0) return [];
-
-  // Filter out memories already surfaced in this session
   const candidates = headers.filter((h) => !alreadySurfaced.has(h.filePath));
   if (candidates.length === 0) return [];
 
   const manifest = formatMemoryManifest(candidates);
-
   try {
-    const text = await sideQuery(
-      SELECT_MEMORIES_PROMPT,
-      `Query: ${query}\n\nAvailable memories:\n${manifest}`,
-      signal,
-    );
-
-    // Extract JSON from response (model may wrap in markdown code blocks)
+    const text = await sideQuery(SELECT_MEMORIES_PROMPT,
+      `Query: ${query}\n\nAvailable memories:\n${manifest}`, signal);
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return [];
-
     const parsed = JSON.parse(jsonMatch[0]);
     const selectedFilenames: string[] = parsed.selected_memories || [];
-
-    // Map filenames back to headers, read full content
     const filenameSet = new Set(selectedFilenames);
     const selected = candidates.filter((h) => filenameSet.has(h.filename));
 
     return selected.slice(0, 5).map((h) => {
       let content = readFileSync(h.filePath, "utf-8");
-      // Per-file truncation (4KB)
       if (Buffer.byteLength(content) > MAX_MEMORY_BYTES_PER_FILE) {
         content = content.slice(0, MAX_MEMORY_BYTES_PER_FILE) +
           "\n\n[... truncated, memory file too large ...]";
@@ -291,11 +224,9 @@ export async function selectRelevantMemories(
       const headerText = freshness
         ? `${freshness}\n\nMemory: ${h.filePath}:`
         : `Memory (saved ${memoryAge(h.mtimeMs)}): ${h.filePath}:`;
-
       return { path: h.filePath, content, mtimeMs: h.mtimeMs, header: headerText };
     });
   } catch (err: any) {
-    // Silent failure -- memory recall should never block the main loop
     if (signal?.aborted) return [];
     console.error(`[memory] semantic recall failed: ${err.message}`);
     return [];
@@ -303,82 +234,49 @@ export async function selectRelevantMemories(
 }
 ```
 
-Several key design points:
+- **sideQuery reuses main model** (CC opens a separate Sonnet)
+- Only sends filenames + descriptions, low input tokens
+- `alreadySurfaced` prevents duplicate recall in same session
+- 4KB per-file truncation + 60KB session budget
 
-**sideQuery uses the same model, not a separate smaller model.** Claude Code uses Sonnet for sideQuery; we simplify by reusing the user's configured model. sideQuery only sends the memory manifest (filenames + descriptions), not full content, so input tokens are minimal.
-
-**The model does semantic selection, which is far more powerful than keyword matching.** "Deployment process" can match "CI/CD Considerations," "database performance" can match "PostgreSQL Index Optimization Experience" -- because the model understands semantic relationships, not just literal overlap.
-
-**The `alreadySurfaced` Set prevents duplicate recalls.** Memories already shown in the current session won't appear again, avoiding the user seeing the same memories with every question. This Set grows throughout the session lifetime.
-
-**Per-file 4KB truncation + 60KB session budget.** Prevents a single large memory or accumulated recalls from crowding out context. The budget uses byte-level control, not token-level -- byte calculation is faster and more fair for multilingual text.
-
-> **Comparison with old keyword matching (now replaced):** The old implementation split queries into words and matched them one by one -- zero API calls but low accuracy. The new version consumes 1 API call per recall, but the semantic understanding capability is a qualitative leap. For tutorial projects with few memories, this API cost is entirely acceptable.
-
-### Async Prefetch (startMemoryPrefetch)
-
-Semantic recall requires an API call, and executing it synchronously would add to user wait time. The solution: **start recall the instant the user submits input, running in parallel with the first model API call.**
+## Async Prefetch
 
 ```typescript
-// memory.ts -- startMemoryPrefetch
-
+// memory.ts
 export function startMemoryPrefetch(
-  query: string,
-  sideQuery: SideQueryFn,
-  alreadySurfaced: Set<string>,
-  sessionMemoryBytes: number,
+  query: string, sideQuery: SideQueryFn,
+  alreadySurfaced: Set<string>, sessionMemoryBytes: number,
   signal?: AbortSignal,
 ): MemoryPrefetch | null {
-  // Gate 1: Skip single-word queries (too short for semantic matching)
-  if (!/\s/.test(query.trim())) return null;
-
-  // Gate 2: Session budget is full
-  if (sessionMemoryBytes >= MAX_SESSION_MEMORY_BYTES) return null;
-
-  // Gate 3: No memory files exist
+  if (!/\s/.test(query.trim())) return null;                // Gate 1: single word skip
+  if (sessionMemoryBytes >= MAX_SESSION_MEMORY_BYTES) return null;  // Gate 2: budget full
   const dir = getMemoryDir();
-  const hasMemories = readdirSync(dir).some(
-    (f) => f.endsWith(".md") && f !== "MEMORY.md"
-  );
-  if (!hasMemories) return null;
+  if (!readdirSync(dir).some(f => f.endsWith(".md") && f !== "MEMORY.md")) return null;  // Gate 3
 
   const handle: MemoryPrefetch = {
     promise: selectRelevantMemories(query, sideQuery, alreadySurfaced, signal),
-    settled: false,
-    consumed: false,
+    settled: false, consumed: false,
   };
   handle.promise.then(() => { handle.settled = true; }).catch(() => { handle.settled = true; });
   return handle;
 }
-```
 
-Usage in `agent.ts`:
-
-```typescript
-// agent.ts -- Prefetch launch and consumption
-
-// Start prefetch immediately after user message arrives
+// agent.ts — consumption
 this.anthropicMessages.push({ role: "user", content: userMessage });
 let memoryPrefetch: MemoryPrefetch | null = null;
 if (!this.isSubAgent) {
   const sq = this.buildSideQuery();
-  if (sq) {
-    memoryPrefetch = startMemoryPrefetch(
-      userMessage, sq,
-      this.alreadySurfacedMemories, this.sessionMemoryBytes,
-      this.abortController?.signal,
-    );
-  }
+  if (sq) memoryPrefetch = startMemoryPrefetch(
+    userMessage, sq, this.alreadySurfacedMemories, this.sessionMemoryBytes,
+    this.abortController?.signal);
 }
 
-// Non-blocking poll in the while loop, before each API call
+// Non-blocking poll inside the while loop
 if (memoryPrefetch && memoryPrefetch.settled && !memoryPrefetch.consumed) {
   memoryPrefetch.consumed = true;
   const memories = await memoryPrefetch.promise;
   if (memories.length > 0) {
-    const injectionText = formatMemoriesForInjection(memories);
-    this.anthropicMessages.push({ role: "user", content: injectionText });
-    // Track surfaced memories and session budget
+    this.anthropicMessages.push({ role: "user", content: formatMemoriesForInjection(memories) });
     for (const m of memories) {
       this.alreadySurfacedMemories.add(m.path);
       this.sessionMemoryBytes += Buffer.byteLength(m.content);
@@ -387,35 +285,12 @@ if (memoryPrefetch && memoryPrefetch.settled && !memoryPrefetch.consumed) {
 }
 ```
 
-The key to this design is **non-blocking polling**:
+**Non-blocking poll**: prefetch is not awaited; `.then()` sets `settled`; each loop iteration checks once — if not ready, defer to next iteration. Worst case one turn late, user never waits.
 
-1. **Prefetch starts at user input time** -- runs in parallel with the first model API call, so the user perceives no extra delay
-2. **Checked every loop iteration** -- if prefetch hasn't completed, it's skipped without waiting; checked again next iteration
-3. **`settled` flag is set via `.then()`** -- no `await`, results are only read after confirmed completion
-4. **Marked `consumed = true` after use** -- ensures the same prefetch is only injected once
-
-Three gating conditions avoid wasting API calls:
-- **Multi-word query**: A single word (like "hi") is too short for meaningful semantic matching
-- **Session budget**: Stops recall after exceeding 60KB cumulative, preventing context overload
-- **Memory existence**: Skips when no memory files exist, saving an API call
-
-`formatMemoriesForInjection` wraps each memory in `<system-reminder>` tags and injects them as user messages:
+## Freshness Warning
 
 ```typescript
-export function formatMemoriesForInjection(memories: RelevantMemory[]): string {
-  return memories
-    .map((m) => `<system-reminder>\n${m.header}\n\n${m.content}\n</system-reminder>`)
-    .join("\n\n");
-}
-```
-
-### Freshness Warning
-
-Memories are point-in-time snapshots, not live state. A memory saying "project deadline next week" is outdated when read two weeks later, and the model would give incorrect advice if it doesn't know this.
-
-```typescript
-// memory.ts -- memoryFreshnessWarning
-
+// memory.ts
 export function memoryFreshnessWarning(mtimeMs: number): string {
   const days = Math.max(0, Math.floor((Date.now() - mtimeMs) / 86_400_000));
   if (days <= 1) return "";
@@ -423,30 +298,13 @@ export function memoryFreshnessWarning(mtimeMs: number): string {
 }
 ```
 
-The rule is simple: no prompt within 1 day (information is essentially fresh), but a warning is attached after 1 day. The warning text explicitly tells the model two things: "this is an observation from a past point in time" and "verify against current code before stating as fact." This is more effective than simply labeling "X days ago" -- it provides an action directive, not just information.
+Provides **actionable guidance** ("verify against current code") rather than just labeling "X days old".
 
----
-
-## Key Design Decisions
-
-**Why use the filesystem instead of a database for memory?** Three benefits: users can directly read and write memory files with an editor; the model can operate using existing `write_file`/`read_file` tools without needing a dedicated memory API; and it can be put under git version control if desired. The memory system "piggybacks" on the tool system, reducing the number of interfaces that need to be exposed.
-
-**Why semantic recall instead of keyword matching?** Keyword matching can only find memories with literal overlap. Semantic recall understands the connection between "deployment process" and "CI/CD Considerations." The cost is 1 API call per recall, but sideQuery only sends the memory manifest (filenames + descriptions), so input tokens are minimal and cost is low. For scenarios with limited memories, this trade-off is well worth it.
-
-**Why async prefetch instead of synchronous recall?** Synchronous recall means the user has to wait an extra API round-trip with every question. Prefetch runs in parallel with the first model call -- if prefetch finishes first, memories are visible in the first response; if not, they catch up in the second round. In the worst case, memories arrive one round late, but the user never has to wait.
-
-**Why a session-level budget?** Unlimited recall would fill the context with memories, crowding out actual conversation content. The 60KB budget is roughly equivalent to 20-30 medium-length memories, sufficient to cover a session's context needs. The `alreadySurfaced` set combined with the budget cap makes memory recall increasingly precise as the session progresses -- already-shown items don't repeat, and only truly needed items fit within the budget.
-
-### Comparison Overview
+## Simplification Comparison
 
 | Dimension | Claude Code | mini-claude |
 |-----------|------------|-------------|
-| **Recall method** | Sonnet sideQuery semantic matching | sideQuery semantic matching (same model) |
+| **Recall method** | Sonnet sideQuery | Same-model sideQuery |
 | **Async prefetch** | pendingMemoryPrefetch | startMemoryPrefetch |
 | **Session budget** | 60KB | 60KB |
-| **Freshness** | Staleness warning | Staleness warning |
-| **API calls** | 1 per recall | 1 per recall |
-
----
-
-> **Next chapter**: Reusable prompt modules -- the skills system.
+| **Freshness** | Age warning | Age warning |

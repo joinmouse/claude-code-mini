@@ -1,12 +1,10 @@
 # 2. Tool System
 
-## Chapter Goals
-
-Define 6 core tools (read file, write file, edit file, list files, search, Shell) + 5 extension tools (skill, agent, web_fetch, tool_search, plan mode), enabling the LLM to actually operate on your codebase. Implement edit safeguards (read-before-edit + mtime checking) and deferred tools (lazy loading) mechanism.
+13 tools (6 core + web_fetch + tool_search + skill + agent + 2 plan mode) + read-before-edit + mtime + deferred loading.
 
 ```mermaid
 graph LR
-    LLM[LLM Response] --> |tool_use block| Dispatch[executeTool<br/>Dispatcher]
+    LLM[LLM Response] --> |tool_use| Dispatch[executeTool dispatch]
     Dispatch --> RF[read_file]
     Dispatch --> WF[write_file]
     Dispatch --> EF[edit_file]
@@ -19,200 +17,59 @@ graph LR
     Dispatch --> TS[tool_search]
     Dispatch --> EP[enter_plan_mode<br/>deferred]
     Dispatch --> XP[exit_plan_mode<br/>deferred]
-    RF --> Result[Tool Result String]
-    WF --> Result
-    EF --> Result
-    LF --> Result
-    GS --> Result
-    RS --> Result
-    SK --> Result
-    AG --> Result
-    WEB --> Result
-    TS --> Result
-    EP --> Result
-    XP --> Result
 
     style Dispatch fill:#7c5cfc,color:#fff
     style EF fill:#e8e0ff
-    style RF fill:#e8e0ff
 ```
 
-## How Claude Code Does It
+## Reference: Claude Code's Approach
 
-### Tool Interface -- The Complete Contract for Each Tool
+**Unified `Tool` generic interface**: `isConcurrencySafe(input)` receives args (same tool with different args has different semantics — `ls` is read-only, `rm` is not), `prompt(options)` gives each tool its own system prompt fragment, React rendering methods included.
 
-Every tool in Claude Code follows a unified `Tool` generic interface -- not a simple function signature, but a complete behavioral contract:
+**`buildTool` factory fail-closed defaults**: `isConcurrencySafe`/`isReadOnly`/`isDestructive` default to `false` — mislabeling read-only as write only causes extra prompts; the reverse is dangerous.
 
-```typescript
-type Tool<Input, Output, P extends ToolProgressData> = {
-  name: string
-  aliases?: string[]              // Deprecated aliases for smooth migration
-  maxResultSizeChars: number      // Persists to disk if exceeded
+**3-layer registration pipeline**:
+- Layer 1: `getAllBaseTools()` direct import + `feature()` compile-time macros for dead-code elimination
+- Layer 2: `getTools()` runtime filtering by SIMPLE mode / deny rules / `isEnabled()`
+- Layer 3: `assembleToolPool()` built-ins first + MCP appended, sectioned ordering to protect cache breakpoints
 
-  call(args, context, canUseTool, parentMessage, onProgress?): Promise<ToolResult<Output>>
+**8-stage execution lifecycle**: lookup → two-stage validation (Zod + business) → parallel start Hook & Bash classifier → permission check → `call()` streaming progress → large result disk persistence → Post-Hook → `tool_result` return. **Core philosophy: errors are data, not exceptions** — errors at any stage return as `is_error: true` tool_results, letting the model self-correct.
 
-  description(input, options): Promise<string>  // Tool description sent to API
-  prompt(options): Promise<string>              // Usage guide injected into system prompt
+**Concurrency control**: non-concurrency-safe runs solo, multiple concurrency-safe run together. `StreamingToolExecutor` starts as soon as it detects a complete block, hiding the ~1s tool latency inside a 5-30s streaming window. Cap: `MAX_TOOL_USE_CONCURRENCY = 10`.
 
-  inputSchema: Input              // Zod Schema (runtime validation + type inference)
-  inputJSONSchema?: ToolInputJSONSchema
+**edit_file 14-step validation** (sorted by I/O cost): the 3 most critical are read-before-edit (code-enforced, not prompt suggestion), mtime detection of external modifications, config-file JSON Schema validation.
 
-  isConcurrencySafe(input): boolean   // Takes input: same tool with different args can have different safety semantics
-  isReadOnly(input): boolean
-  isDestructive?(input): boolean
-  checkPermissions(input, context): Promise<PermissionResult>
+**Why search-and-replace** (vs alternatives):
 
-  renderToolUseMessage(input, options): React.ReactNode  // Each tool has its own rendering
-  renderToolResultMessage?(content, progress, options): React.ReactNode
-}
-```
-
-Several design highlights:
-
-**`isConcurrencySafe(input)` takes parameters** -- this means the same tool can have different safety semantics for different inputs. BashTool returns `isReadOnly: true` for `ls` and `false` for `rm`. Far more precise than labeling an entire tool.
-
-**`prompt()` method** -- each tool can inject its own usage guide into the system prompt. FileEditTool injects "exact match" rules, BashTool injects safe execution reminders. Tool behavior guidelines are tightly coupled with tool definitions, rather than scattered across a global prompt file.
-
-**Rendering methods** -- each tool carries its own rendering logic; adding new tools doesn't require modifying global rendering code.
-
-### buildTool Factory -- Fail-Closed Defaults
-
-```typescript
-const TOOL_DEFAULTS = {
-  isConcurrencySafe: () => false,    // Not concurrency-safe by default
-  isReadOnly: () => false,           // Has write side effects by default
-  isDestructive: () => false,
-  checkPermissions: () => ({ behavior: 'allow', updatedInput }),
-}
-```
-
-This is a **fail-closed** design: incorrectly marking a "read-only" tool as "non-read-only" results in unnecessary permission prompts (annoying but safe); the reverse error -- incorrectly marking a "write" tool as "read-only" -- could let it execute concurrently without permission checks (dangerous and subtle). Defaults can only go in the safe direction.
-
-### Tool Registration -- Three-Layer Pipeline
-
-```mermaid
-flowchart TD
-    L1["Layer 1: getAllBaseTools()<br/>Core tools via direct import<br/>+ Feature-gated conditional imports"] --> L2["Layer 2: getTools()<br/>Runtime context filtering<br/>SIMPLE mode / deny rules / isEnabled()"]
-    L2 --> L3["Layer 3: assembleToolPool()<br/>Built-in tools + MCP bridge tools<br/>Partitioned sorting + deduplication"]
-    L3 --> Final[Final Tool Pool]
-```
-
-Layer 1's feature-gated tools load via conditional `require()`:
-
-```typescript
-const SleepTool = feature('PROACTIVE') || feature('KAIROS')
-  ? require('./tools/SleepTool/SleepTool.js').SleepTool
-  : null
-```
-
-`feature()` is a compile-time macro for the Bun bundler. It evaluates to `false` in external builds, and the entire `require()` is eliminated as dead code -- internal tools physically don't exist in the external binary.
-
-Layer 3's partitioned sorting: built-in tools come first in alphabetical order, MCP tools are appended after, with no global sorting. The reason is that the API server sets a cache breakpoint after the last built-in tool, so partitioning ensures that adding MCP tools doesn't affect cache hits for built-in tools.
-
-### Tool Execution Lifecycle -- 8 Stages
-
-```mermaid
-flowchart TD
-    Input[Model outputs tool_use block] --> Find["1. Tool Lookup"]
-    Find --> Validate["2. Input Validation (Zod + business logic)"]
-    Validate --> Parallel["3. Parallel Launch"]
-
-    subgraph Parallel
-        Hook["Pre-Tool Hook"]
-        Classifier["Bash Safety Classifier"]
-    end
-
-    Parallel --> Hook
-    Parallel --> Classifier
-    Hook --> Perm["4. Permission Check (Hook->Tool->Rules->Classifier->Interactive Confirmation)"]
-    Classifier --> Perm
-
-    Perm --> Exec["5. tool.call() (streaming progress)"]
-    Exec --> Result["6. Result Processing (large results persisted to disk)"]
-    Result --> PostHook["7. Post-Tool Hook"]
-    PostHook --> Emit["8. tool_result returned to model"]
-```
-
-Several stages worth noting:
-
-**Stage 2 Two-Phase Validation**: Phase 1 is Zod Schema (field types), Phase 2 is business logic (e.g., FileEditTool checks whether old_string is unique). Separating them ensures low-cost checks run first, reducing unnecessary disk I/O.
-
-**Stage 3 Parallel Launch**: Pre-Tool Hook and Bash classifier start simultaneously, each taking tens to hundreds of milliseconds. Parallelization reduces total permission check latency.
-
-**Stage 6 Large Result Handling**: When results exceed `maxResultSizeChars`, the full content is saved to `~/claude-code/tool-results/`, and the model receives a file path + truncation indicator. It can actively retrieve content via FileReadTool when needed.
-
-> **Core design philosophy: errors are data, not exceptions.** Errors at any stage are converted into `tool_result` with `is_error: true` and returned to the model, letting the model self-correct.
-
-### Concurrency Control
-
-```typescript
-private canExecuteTool(isConcurrencySafe: boolean): boolean {
-  const executingTools = this.tools.filter(t => t.status === 'executing')
-  return (
-    executingTools.length === 0 ||
-    (isConcurrencySafe && executingTools.every(t => t.isConcurrencySafe))
-  )
-}
-```
-
-The rule is simple: non-concurrency-safe tools must execute exclusively; multiple concurrency-safe tools can run simultaneously. `StreamingToolExecutor` doesn't wait for the model to finish outputting all tool_use blocks -- as soon as it detects a complete block, it starts execution immediately. Tool execution latency is about 1 second, while model streaming output lasts 5-30 seconds, so most tools can be completely hidden within the streaming window.
-
-Concurrency cap: `MAX_TOOL_USE_CONCURRENCY = 10`.
-
-### edit_file's Core Design
-
-FileEditTool has 14 validation steps before execution (ordered by I/O cost: check in-memory state first, then access disk), with three being most critical:
-
-**Read prerequisite check**: A code-level hard constraint, not just a prompt suggestion. Execution is refused if the file hasn't been read first, ensuring the model edits based on the file's current state rather than stale memory.
-
-**External modification detection**: Uses mtime to detect whether the file was modified externally after being read (e.g., the user edited the same file in their IDE), solving a real race condition.
-
-**Config file protection**: For files like `.claude/settings.json`, validation simulates the edit and runs JSON Schema validation afterward, preventing seemingly reasonable edits from corrupting configuration format.
-
-### Why Search-and-Replace
-
-Before settling on search-and-replace, several alternatives were considered:
-
-| Approach | Fatal Flaw |
+| Approach | Fatal flaw |
 |----------|-----------|
-| Line-number editing | Position-dependent: after inserting 3 lines the first time, all subsequent line numbers shift, requiring complex recalculation for multi-step edits |
-| AST editing | Files with syntax errors are exactly the ones that need editing most, but AST parsers error out on syntax errors |
-| Unified diff | LLMs perform poorly generating strict formats: any error in hunk header line numbers, `+`/`-`/space prefixes makes the patch inapplicable |
-| Full file rewrite | Wastes tokens on large files; model may omit unchanged code; users can't quickly review |
-| **String replacement** | None of the above flaws |
+| Line-number editing | Position-dependent, multi-step edits require recalculation |
+| AST editing | Files with syntax errors most need editing, but AST parsers reject them |
+| Unified diff | LLMs perform poorly on strict formats |
+| Whole-file rewrite | Wastes tokens + omits unmodified code + hard to review |
+| **String replacement** | Hallucination-safe — no match = failure, model re-reads and corrects |
 
-The most underrated advantage of search-and-replace is **hallucination safety**: if the model provides a string that doesn't exist in the file, the tool simply fails, and the model re-reads the file to correct its memory. Full file rewrite could silently write incorrect content to the file.
+## Simplification Decisions
 
-## Our Simplification Decisions
+| Claude Code | mini-claude | Reason |
+|-------------|-------------|--------|
+| 66+ tool classes, separate directories | 1 file + 6 functions | No industrial-grade modularity needed |
+| 8-stage lifecycle | switch dispatch | Skip Hook / classifier |
+| StreamingToolExecutor concurrency | Streaming pre-start + read-only parallel | Simplify scheduling |
+| 14-step validation pipeline | Uniqueness + quote tolerance + read-before-edit + mtime | Keep the essentials |
+| 3-tier large-result limits | Single 50K truncation | Enough to prevent context blowup |
 
-| Claude Code's Design | Our Simplification | Reason |
-|---------------------|-------------------|--------|
-| 66+ tool classes, each in its own directory | 1 file + 6 functions | Tutorial doesn't need industrial-grade modularity |
-| 8-stage lifecycle | Direct switch dispatch + execution | Skip Hook, permission checks, classifier |
-| StreamingToolExecutor concurrency | Serial execution one by one | Avoid concurrency complexity |
-| 14-step validation pipeline | Uniqueness check + quote tolerance | Keep only the 2 most critical validations |
-| Three-tier large result limits | Single 50K truncation layer | Enough to prevent context explosion |
-| MCP 7 transports + OAuth | No MCP support | Tutorial focuses on core concepts |
+## Tool Definitions
 
-Core principle: **Preserve the design philosophy, cut the engineering complexity**.
-
-## Our Implementation
-
-### Tool Definitions: Static Array
-
-#### **TypeScript**
 ```typescript
-// tools.ts -- Tool definitions (Anthropic Tool schema format)
-
+// tools.ts — Anthropic native schema, passed straight to API
 export const toolDefinitions: ToolDef[] = [
   {
     name: "read_file",
     description: "Read the contents of a file. Returns the file content with line numbers.",
     input_schema: {
       type: "object",
-      properties: {
-        file_path: { type: "string", description: "The path to the file to read" },
-      },
+      properties: { file_path: { type: "string", description: "The path to the file to read" } },
       required: ["file_path"],
     },
   },
@@ -234,107 +91,67 @@ export const toolDefinitions: ToolDef[] = [
     input_schema: {
       type: "object",
       properties: {
-        file_path: { type: "string", description: "The path to the file to edit" },
+        file_path: { type: "string" },
         old_string: { type: "string", description: "The exact string to find and replace" },
-        new_string: { type: "string", description: "The string to replace it with" },
+        new_string: { type: "string" },
       },
       required: ["file_path", "old_string", "new_string"],
     },
   },
-  // ... list_files, grep_search, run_shell
+  // ... list_files, grep_search, run_shell, skill, agent, web_fetch, tool_search, enter/exit_plan_mode
 ];
 ```
 
-These definitions are passed directly to the Anthropic API's `tools` parameter -- the format is exactly the same, no conversion needed.
+Static array + switch — 13 tools don't need a class hierarchy.
 
-**Why a static array instead of classes?** Claude Code uses a class hierarchy because 66+ tools need inheritance, polymorphism, and independent testing. For 6 tools, an array + a switch statement is sufficient -- simplicity itself is a value.
+## Dispatcher
 
-### Tool Execution: Switch Dispatcher
-
-#### **TypeScript**
 ```typescript
-export async function executeTool(
-  name: string,
-  input: Record<string, any>
-): Promise<string> {
+// tools.ts
+export async function executeTool(name: string, input: Record<string, any>): Promise<string> {
   let result: string;
   switch (name) {
-    case "read_file":   result = readFile(input as { file_path: string }); break;
-    case "write_file":  result = writeFile(input as { file_path: string; content: string }); break;
-    case "edit_file":   result = editFile(input as { file_path: string; old_string: string; new_string: string }); break;
-    case "list_files":  result = await listFiles(input as { pattern: string; path?: string }); break;
-    case "grep_search": result = grepSearch(input as { pattern: string; path?: string; include?: string }); break;
-    case "run_shell":   result = runShell(input as { command: string; timeout?: number }); break;
+    case "read_file":   result = readFile(input as any); break;
+    case "write_file":  result = writeFile(input as any); break;
+    case "edit_file":   result = editFile(input as any); break;
+    case "list_files":  result = await listFiles(input as any); break;
+    case "grep_search": result = grepSearch(input as any); break;
+    case "run_shell":   result = runShell(input as any); break;
     default: return `Unknown tool: ${name}`;
   }
-  return truncateResult(result);  // <- 50K character protection
+  return truncateResult(result);  // 50K guard
 }
 ```
 
-The `default` branch returns `Unknown tool: ${name}` instead of throwing an exception -- embodying the "errors are data" design, allowing the model to self-correct hallucinated tool names.
+`default` returns a string instead of throwing — lets the model correct hallucinated tool names.
 
-### Tool-by-Tool Walkthrough
+## edit_file — Core
 
-#### read_file
-
-#### **TypeScript**
 ```typescript
-function readFile(input: { file_path: string }): string {
+function editFile(input: { file_path: string; old_string: string; new_string: string }): string {
   try {
     const content = readFileSync(input.file_path, "utf-8");
-    const lines = content.split("\n");
-    const numbered = lines
-      .map((line, i) => `${String(i + 1).padStart(4)} | ${line}`)
-      .join("\n");
-    return numbered;
-  } catch (e: any) {
-    return `Error reading file: ${e.message}`;
-  }
-}
-```
-
-Line numbers are added so the LLM can locate code positions, but `edit_file` matches against the actual content string, not line numbers.
-
-#### edit_file -- The Most Critical Tool
-
-#### **TypeScript**
-```typescript
-function editFile(input: {
-  file_path: string;
-  old_string: string;
-  new_string: string;
-}): string {
-  try {
-    const content = readFileSync(input.file_path, "utf-8");
-
-    // Unique match check
     const count = content.split(input.old_string).length - 1;
-    if (count === 0)
-      return `Error: old_string not found in ${input.file_path}`;
-    if (count > 1)
-      return `Error: old_string found ${count} times. Must be unique.`;
-
+    if (count === 0) return `Error: old_string not found in ${input.file_path}`;
+    if (count > 1)  return `Error: old_string found ${count} times. Must be unique.`;
     const newContent = content.replace(input.old_string, input.new_string);
     writeFileSync(input.file_path, newContent);
     return `Successfully edited ${input.file_path}`;
-  } catch (e: any) {
-    return `Error editing file: ${e.message}`;
-  }
+  } catch (e: any) { return `Error editing file: ${e.message}`; }
 }
 ```
 
-The unique match check is the core: 0 occurrences means the model's memory of the file contents is wrong (hallucination detection); >1 occurrences requires the model to provide more context to uniquely identify the edit point. "Better to fail than to guess" -- silently replacing the first match is far more dangerous than reporting failure.
+**Uniqueness check** is core: 0 matches = hallucination, >1 = insufficient context. **Better to fail than guess**.
 
-#### Quote Tolerance + Diff Output
+## Quote Tolerance
 
-LLM tokenization may map straight quotes to curly quotes (`"` -> `"`). Without a tolerance mechanism, such edits would fail 100% of the time.
+LLM tokenization can turn straight quotes into curly quotes; without tolerance this fails 100%:
 
-#### **TypeScript**
 ```typescript
 function normalizeQuotes(s: string): string {
   return s
-    .replace(/[\u2018\u2019\u2032]/g, "'")   // curly single -> straight
-    .replace(/[\u201C\u201D\u2033]/g, '"');   // curly double -> straight
+    .replace(/[\u2018\u2019\u2032]/g, "'")   // curly single → straight
+    .replace(/[\u201C\u201D\u2033]/g, '"');   // curly double → straight
 }
 
 function findActualString(fileContent: string, searchString: string): string | null {
@@ -347,102 +164,24 @@ function findActualString(fileContent: string, searchString: string): string | n
 }
 ```
 
-Key detail: after a successful match, the **original string from the file** is returned, not the normalized version, preserving the file's original character style during replacement.
+Returns the **original string from the file** (not the normalized version) after matching, preserving original character style. On success, prints `@@ -N,1 +N,1 @@` mini-diff (line number = count of `\n` before `old_string`).
 
-After a successful edit, a simple diff is generated, with line numbers calculated by counting `\n` characters before the `old_string`:
+## Other Tools (Highlights)
 
-```
-Successfully edited src/app.ts (matched via quote normalization)
+**read_file**: `readFileSync` + line numbers (for LLM positioning; `edit_file` matches content, not line numbers).
 
-@@ -15,1 +15,1 @@
-- const msg = "hello";
-+ const msg = "world";
-```
+**write_file**: `mkdirSync({recursive: true})` auto-creates parent dirs so the model doesn't need extra shell calls. System prompt guides preferring `edit_file`.
 
-#### write_file
+**grep_search**: `grep --line-number --color=never -r`, exit code 1 (no match) is not treated as error — 2+ is; truncates to first 100 hits with `... and N more` appended. (Claude Code uses ripgrep; we use system grep.)
 
-#### **TypeScript**
-```typescript
-function writeFile(input: { file_path: string; content: string }): string {
-  try {
-    const dir = dirname(input.file_path);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(input.file_path, input.content);
-    return `Successfully wrote to ${input.file_path}`;
-  } catch (e: any) {
-    return `Error writing file: ${e.message}`;
-  }
-}
-```
+**run_shell**: `execSync` + timeout; on failure returns **both** stdout & stderr (compilers often error on stderr while having partial output on stdout); empty output returns `"(no output)"` to avoid confusion.
 
-Auto-creating parent directories (`mkdir -p` effect) avoids the model needing an extra shell command. The System Prompt tells the LLM to prefer `edit_file` and only use `write_file` for new files.
+**web_fetch**: 30s timeout + HTML tag stripping + 50KB cap; marked `CONCURRENCY_SAFE`.
 
-#### grep_search
+## Result Truncation (keep head + tail)
 
-#### **TypeScript**
-```typescript
-function grepSearch(input: {
-  pattern: string;
-  path?: string;
-  include?: string;
-}): string {
-  try {
-    const args = ["--line-number", "--color=never", "-r"];
-    if (input.include) args.push(`--include=${input.include}`);
-    args.push(input.pattern);
-    args.push(input.path || ".");
-    const result = execSync(`grep ${args.join(" ")}`, {
-      encoding: "utf-8",
-      maxBuffer: 1024 * 1024,
-      timeout: 10000,
-    });
-    const lines = result.split("\n").filter(Boolean);
-    return lines.slice(0, 100).join("\n") +
-      (lines.length > 100 ? `\n... and ${lines.length - 100} more matches` : "");
-  } catch (e: any) {
-    if (e.status === 1) return "No matches found.";
-    return `Error: ${e.message}`;
-  }
-}
-```
-
-`--color=never` disables ANSI color codes (the output is for the model, not for human eyes). The Python version's `--` separator ensures patterns starting with `-` aren't misinterpreted as grep options.
-
-grep exit code 1 means "no matches" which isn't an error; 2+ is a real error -- they need to be handled separately. Results are truncated to the first 100 entries, with a `... and N more matches` note appended.
-
-Claude Code uses ripgrep (`rg`); we use system `grep` -- functionally sufficient, one fewer dependency.
-
-#### run_shell
-
-#### **TypeScript**
-```typescript
-function runShell(input: { command: string; timeout?: number }): string {
-  try {
-    const result = execSync(input.command, {
-      encoding: "utf-8",
-      maxBuffer: 5 * 1024 * 1024,
-      timeout: input.timeout || 30000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    return result || "(no output)";
-  } catch (e: any) {
-    const stderr = e.stderr ? `\nStderr: ${e.stderr}` : "";
-    const stdout = e.stdout ? `\nStdout: ${e.stdout}` : "";
-    return `Command failed (exit code ${e.status})${stdout}${stderr}`;
-  }
-}
-```
-
-On failure, both stdout and stderr are returned -- many compilers output errors on stderr while stdout may contain useful partial output. `"(no output)"` prevents the model from getting confused when a command succeeds but produces no output (`mkdir`, `touch`).
-
-Claude Code's BashTool spans 18 source files, with AST command parsing, sandboxed execution, and 23 safety checks. We only do timeout protection (safety mechanisms are detailed in Chapter 6).
-
-### Tool Result Truncation
-
-#### **TypeScript**
 ```typescript
 const MAX_RESULT_CHARS = 50000;
-
 function truncateResult(result: string): string {
   if (result.length <= MAX_RESULT_CHARS) return result;
   const keepEach = Math.floor((MAX_RESULT_CHARS - 60) / 2);
@@ -454,88 +193,19 @@ function truncateResult(result: string): string {
 }
 ```
 
-Keeping both head and tail rather than just the head, because many commands produce critical output at the end (compilation error summaries, test result statistics). The truncation notice explicitly tells the model that content was truncated, so the model can decide whether to use `grep_search` or `read_file` to get the full content.
+Keep head + tail — many outputs put critical info at the end (compile-error summaries, test totals).
 
-### WebFetch Tool
+## Read-before-edit + mtime Guard
 
-Lets the Agent access URLs to retrieve content -- looking up documentation, reading API responses, scraping web information:
-
-#### **TypeScript**
 ```typescript
-// tools.ts -- web_fetch definition
-{
-  name: "web_fetch",
-  description: "Fetch a URL and return its content as text. For HTML pages, tags are stripped.",
-  input_schema: {
-    type: "object",
-    properties: {
-      url: { type: "string", description: "The URL to fetch" },
-      max_length: { type: "number", description: "Maximum content length (default 50000)" },
-    },
-    required: ["url"],
-  },
-}
-
-// tools.ts -- web_fetch execution
-case "web_fetch": {
-  const url = input.url as string;
-  const maxLength = (input.max_length as number) || 50000;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: { "User-Agent": "mini-claude/1.0" },
-    });
-    clearTimeout(timeout);
-    if (!res.ok) { result = `HTTP error: ${res.status} ${res.statusText}`; break; }
-    let text = await res.text();
-    if (contentType.includes("html")) {
-      // Strip script/style tags, convert HTML tags to spaces, handle HTML entities
-      text = text
-        .replace(/<script[\s\S]*?<\/script>/gi, "")
-        .replace(/<style[\s\S]*?<\/style>/gi, "")
-        .replace(/<[^>]*>/g, " ")
-        .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
-        .replace(/\s{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-    }
-    if (text.length > maxLength) {
-      text = text.slice(0, maxLength) + `\n\n[... truncated at ${maxLength} characters]`;
-    }
-    result = text || "(empty response)";
-  } catch (err: any) {
-    clearTimeout(timeout);
-    result = err.name === "AbortError"
-      ? "Error: Request timed out (30s)"
-      : `Error fetching ${url}: ${err.message}`;
-  }
-  break;
-}
-```
-
-Design choices:
-- **30-second timeout**: Prevents the model from blocking the entire loop on slow or unresponsive URLs
-- **HTML tag stripping**: LLMs don't need to see HTML tags; plain text is more efficient
-- **50KB limit**: Prevents web content from crowding out the context window
-- Marked as `CONCURRENCY_SAFE_TOOLS` (read-only, no side effects), can be executed in parallel
-
-### Read-before-edit + mtime Protection
-
-An important safety mechanism from Claude Code: **a file must be read before it can be edited**. This prevents the model from blindly modifying files without knowing their current contents, and detects external modifications to avoid overwriting the user's manual edits.
-
-#### **TypeScript**
-```typescript
-// tools.ts -- mtime tracking in executeTool
-
+// tools.ts — mtime tracking in executeTool
 export async function executeTool(
-  name: string,
-  input: Record<string, any>,
-  readFileState?: Map<string, number>  // filepath -> mtimeMs
+  name: string, input: Record<string, any>,
+  readFileState?: Map<string, number>  // filepath → mtimeMs
 ): Promise<string> {
   switch (name) {
     case "read_file":
-      result = readFile(input as { file_path: string });
-      // Record the file's modification time
+      result = readFile(input as any);
       if (readFileState && !result.startsWith("Error")) {
         const absPath = resolve(input.file_path);
         try { readFileState.set(absPath, statSync(absPath).mtimeMs); } catch {}
@@ -544,62 +214,40 @@ export async function executeTool(
 
     case "write_file": {
       const absPath = resolve(input.file_path);
-      // Existing files must be read first
       if (readFileState && existsSync(absPath)) {
-        if (!readFileState.has(absPath)) {
+        if (!readFileState.has(absPath))
           return "Error: You must read this file before writing. Use read_file first.";
-        }
-        // mtime change means the file was modified externally
-        const cur = statSync(absPath).mtimeMs;
-        if (cur !== readFileState.get(absPath)!) {
+        if (statSync(absPath).mtimeMs !== readFileState.get(absPath)!)
           return "Warning: file was modified externally. Please read_file again.";
-        }
       }
-      result = writeFile(input as { file_path: string; content: string });
-      // Update mtime
+      result = writeFile(input as any);
       if (readFileState && !result.startsWith("Error")) {
         try { readFileState.set(absPath, statSync(absPath).mtimeMs); } catch {}
       }
       break;
     }
-    // edit_file follows the same pattern...
+    // edit_file same idea
   }
 }
 ```
 
-Three key points:
-- **readFileState Map** is maintained in the Agent instance, with absolute paths as keys and `mtimeMs` at last read as values
-- **New files skip the check**: When `existsSync(absPath)` is false, reading first isn't required -- creating a new file doesn't need a prior read
-- **mtime comparison**: Records mtime at read time, compares before writing. If they don't match, it means the file was modified by the user or another process after the Agent read it, returning a warning rather than silently overwriting
+- `readFileState` Map lives on the Agent instance; key = absolute path, value = `mtimeMs`
+- New files skip the check (when `existsSync` is false, no forced read-first)
+- Mismatched mtime = file was externally modified → warn instead of silently overwriting
 
-This aligns with Claude Code's `readFileTimestamps` mechanism -- edits must be based on known state, no "blind writes."
+## Deferred Loading
 
-### ToolSearch Deferred Loading
+With many tools (66+), sending all schemas is a token waste. **Deferred tools send only the name; the model activates them on-demand via `tool_search`**.
 
-When the number of tools grows large (66+), sending all tool schemas to the API wastes significant tokens. Claude Code's approach is **deferred loading**: infrequently used tools only have their names sent, and the model activates them on demand via `ToolSearch`.
-
-#### **TypeScript**
 ```typescript
-// tools.ts -- deferred flag
+// tools.ts
 {
   name: "enter_plan_mode",
   description: "Enter plan mode to switch to a read-only planning phase...",
   input_schema: { type: "object", properties: {} },
-  deferred: true,  // <- Marked as deferred
+  deferred: true,  // ← marker
 },
 
-// tools.ts -- tool_search tool
-{
-  name: "tool_search",
-  description: "Search for available tools by name or keyword. Returns full schemas for matching deferred tools.",
-  input_schema: {
-    type: "object",
-    properties: { query: { type: "string", description: "Tool name or search keywords" } },
-    required: ["query"],
-  },
-}
-
-// tools.ts -- activation logic
 const activatedTools = new Set<string>();
 
 export function getActiveToolDefinitions(allTools?: ToolDef[]): Anthropic.Tool[] {
@@ -609,11 +257,10 @@ export function getActiveToolDefinitions(allTools?: ToolDef[]): Anthropic.Tool[]
     .map(({ deferred, ...rest }) => rest);
 }
 
-// tool_search execution: match -> activate -> return schema
+// tool_search execution
 case "tool_search": {
   const query = (input.query as string || "").toLowerCase();
-  const deferred = toolDefinitions.filter(t => t.deferred);
-  const matches = deferred.filter(t =>
+  const matches = toolDefinitions.filter(t => t.deferred).filter(t =>
     t.name.toLowerCase().includes(query) ||
     (t.description || "").toLowerCase().includes(query)
   );
@@ -625,26 +272,18 @@ case "tool_search": {
 }
 ```
 
-Workflow:
-1. During API calls, `getActiveToolDefinitions()` filters out unactivated deferred tools (only names sent, no schemas)
-2. The system prompt uses `getDeferredToolNames()` to tell the model which tools can be activated via `tool_search`
-3. When needed, the model calls `tool_search`, and matching tools are added to the `activatedTools` Set
-4. The next API call automatically includes the full schemas of activated tools
-
-We only have 2 deferred tools (plan mode), but this mechanism becomes critical when scaling to 20+ tools.
+Flow: `getActiveToolDefinitions` filters → system prompt announces activatable list via `getDeferredToolNames()` → model calls `tool_search` → adds to `activatedTools` → next call carries full schema.
 
 ## Simplification Comparison
 
 | Dimension | Claude Code | mini-claude |
 |-----------|------------|-------------|
-| **Tool count** | 66+ | 13 (6 core + web_fetch + tool_search + skill + agent + 2 plan mode) |
-| **Execution mode** | Concurrent execution + streaming early start | Parallel execution (concurrencySafe) + streaming early start |
-| **Search engine** | ripgrep (rg) | System grep |
-| **Edit validation** | 14-step pipeline + readFileTimestamps | Quote tolerance + uniqueness + diff + read-before-edit + mtime |
-| **Shell safety** | AST parsing + sandbox | Regex matching + confirmation |
-| **Result truncation** | Selective trimming + disk persistence | Head+tail 50K + 30KB disk persistence |
-| **Deferred loading** | deferred tools + ToolSearch | deferred flag + tool_search |
-| **Network access** | WebFetch (tag stripping + timeout) | web_fetch (tag stripping + 30s timeout + 50KB limit) |
+| **Tool count** | 66+ | 13 |
+| **Execution mode** | StreamingToolExecutor concurrency | Streaming pre-start + read-only parallel |
+| **Search engine** | ripgrep | system grep |
+| **Edit validation** | 14 steps + readFileTimestamps | Uniqueness + quote tolerance + read-before-edit + mtime |
+| **Shell safety** | AST + sandbox + 23 checks | Regex + confirm |
+| **Deferred loading** | deferred + ToolSearch | Same |
 
 ---
 

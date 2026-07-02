@@ -1,102 +1,67 @@
-# 10. Plan Mode: Read-Only Planning Mode
+# 10. Plan Mode
 
-## Chapter Goals
-
-Implement Plan Mode: have the Agent formulate a plan before executing, avoiding blind code modifications. This includes mode switching, plan file persistence, permission integration, and a 4-option approval workflow.
+Plan first, then execute; read-only exploration → write plan → approval → 4-option workflow.
 
 ```mermaid
 graph TB
     Entry["--plan / /plan / enter_plan_mode"] --> Switch["Switch permission to plan"]
     Switch --> Inject["Inject Plan Mode system prompt"]
-    Inject --> ReadOnly["Agent explores code (read-only)"]
+    Inject --> ReadOnly["Read-only exploration"]
     ReadOnly --> WritePlan["Write plan to plan file"]
-    WritePlan --> Exit["Call exit_plan_mode"]
+    WritePlan --> Exit["exit_plan_mode"]
     Exit --> Approval{"User approval"}
     Approval -->|"1. Clear + Execute"| ClearExec["Clear history → acceptEdits"]
     Approval -->|"2. Execute"| Exec["Keep history → acceptEdits"]
     Approval -->|"3. Manual"| Manual["Restore original mode"]
-    Approval -->|"4. Keep Planning"| Feedback["User provides feedback"]
+    Approval -->|"4. Keep Planning"| Feedback["User feedback"]
     Feedback --> ReadOnly
 
     style Switch fill:#7c5cfc,color:#fff
     style Approval fill:#e8e0ff
-    style ClearExec fill:#e0ffe0
-    style Exec fill:#e0ffe0
-    style Manual fill:#ffe0e0
 ```
 
-## How Claude Code Does It
+## Reference: Claude Code's Approach
 
-Claude Code's Plan Mode is a complete EnterPlanMode / ExitPlanMode tool pair:
+Full `EnterPlanMode` / `ExitPlanMode` tool pair: entering switches to read-only + generates plan file (`~/.claude/plans/`) + injects system prompt → Agent explores read-only, writes plan → user chooses among 4 execution modes. **Core philosophy**: Plan Mode isn't "prevent Agent from doing things", it's **think before doing**; the plan is persisted to disk, so even clearing context doesn't lose it.
 
-1. **Enter**: Switch to read-only mode, generate a plan file (in the `~/.claude/plans/` directory), inject a plan system prompt to constrain Agent behavior
-2. **Plan**: The Agent uses read-only tools to explore the code and writes the implementation plan to the plan file
-3. **Exit**: The Agent calls ExitPlanMode, and the user sees the plan and chooses how to execute
-4. **Approve**: The user chooses to clear context and execute, keep context and execute, manually approve each edit, or continue revising
+## Tool Definitions (deferred)
 
-Key design insight: **Plan Mode isn't about "preventing the Agent from doing things" -- it's about making the Agent think before acting**. Persisting the plan file to disk means that even if context is cleared, the plan won't be lost -- the Agent can start fresh executing an approved plan.
-
-## Our Implementation
-
-### Tool Definitions
-
-Plan Mode requires two tools, marked as `deferred` (lazy-loaded, see [Chapter 2](/en/docs/02-tools.md)):
-
-#### **TypeScript**
 ```typescript
-// tools.ts — Plan Mode tool definitions
-
-// ─── Plan mode tools ────────────────────────────────────────
+// tools.ts
 {
   name: "enter_plan_mode",
-  description:
-    "Enter plan mode to switch to a read-only planning phase. In plan mode, you can only read files and write to the plan file. Use this when you need to explore the codebase and design an implementation plan before making changes.",
-  input_schema: {
-    type: "object" as const,
-    properties: {},
-  },
+  description: "Enter plan mode to switch to a read-only planning phase. In plan mode, you can only read files and write to the plan file. Use this when you need to explore the codebase and design an implementation plan before making changes.",
+  input_schema: { type: "object", properties: {} },
   deferred: true,
 },
 {
   name: "exit_plan_mode",
-  description:
-    "Exit plan mode after you have finished writing your plan to the plan file. The user will review and approve the plan before you proceed with implementation.",
-  input_schema: {
-    type: "object" as const,
-    properties: {},
-  },
+  description: "Exit plan mode after you have finished writing your plan to the plan file. The user will review and approve the plan before you proceed with implementation.",
+  input_schema: { type: "object", properties: {} },
   deferred: true,
 },
 ```
 
-Neither tool takes parameters -- entering and exiting are pure state transitions, and all data (plan file path, approval result) is managed internally by the Agent. They're marked `deferred` because most sessions don't need Plan Mode, and lazy loading avoids consuming prompt space.
+No parameters (pure state switch); deferred because most sessions don't use it (see [Chapter 2](/en/docs/02-tools.md)).
 
-### Mode Switching
+## State
 
-Plan Mode involves 4 state variables:
-
-#### **TypeScript**
 ```typescript
-// agent.ts — Plan Mode state
-
-// Plan mode state
-private prePlanMode: PermissionMode | null = null;    // Mode before entering (for restoration)
-private planFilePath: string | null = null;            // Plan file path
-private baseSystemPrompt: string = "";                 // Base prompt without plan injection
-private contextCleared: boolean = false;               // Whether context was cleared during approval
+// agent.ts
+private prePlanMode: PermissionMode | null = null;    // Mode before entering, for restoration
+private planFilePath: string | null = null;
+private baseSystemPrompt: string = "";                 // Base without plan injection
+private contextCleared: boolean = false;
 ```
 
-`prePlanMode` is critical -- it remembers the permission mode before entering Plan Mode so it can be precisely restored on exit. If the user was in `acceptEdits` mode, exiting Plan Mode should return to `acceptEdits`, not `default`.
+`prePlanMode` is key — restores exit precisely (original acceptEdits returns to acceptEdits, not default).
 
-The switching logic is a symmetric enter/exit:
+## Toggle (symmetric enter/exit)
 
-#### **TypeScript**
 ```typescript
-// agent.ts — togglePlanMode()
-
+// agent.ts
 togglePlanMode(): string {
   if (this.permissionMode === "plan") {
-    // Exit: restore original mode, clean up state, remove plan prompt
     this.permissionMode = this.prePlanMode || "default";
     this.prePlanMode = null;
     this.planFilePath = null;
@@ -104,7 +69,6 @@ togglePlanMode(): string {
     printInfo(`Exited plan mode → ${this.permissionMode} mode`);
     return this.permissionMode;
   } else {
-    // Enter: save current mode, switch permission, generate plan file, inject prompt
     this.prePlanMode = this.permissionMode;
     this.permissionMode = "plan";
     this.planFilePath = this.generatePlanFilePath();
@@ -113,17 +77,6 @@ togglePlanMode(): string {
     return "plan";
   }
 }
-```
-
-Note how the system prompt is updated: on entry, the plan prompt is appended after `baseSystemPrompt`; on exit, it's restored to `baseSystemPrompt`.
-
-### Plan File and System Prompt
-
-The plan file path is generated based on the session ID, ensuring each session has its own independent plan file:
-
-#### **TypeScript**
-```typescript
-// agent.ts — Plan file generation
 
 private generatePlanFilePath(): string {
   const dir = join(homedir(), ".claude", "plans");
@@ -132,14 +85,11 @@ private generatePlanFilePath(): string {
 }
 ```
 
-The plan system prompt injects strict read-only constraints and workflow guidance:
+## Plan System Prompt
 
-#### **TypeScript**
 ```typescript
-// agent.ts — buildPlanModePrompt()
-
-private buildPlanModePrompt(): string {
-  return `
+// agent.ts — buildPlanModePrompt
+return `
 
 # Plan Mode Active
 
@@ -151,9 +101,9 @@ Write your plan incrementally to this file using write_file or edit_file.
 This is the ONLY file you are allowed to edit.
 
 ## Workflow
-1. **Explore**: Read code to understand the task. Use read_file, list_files, grep_search.
+1. **Explore**: Read code (read_file, list_files, grep_search).
 2. **Design**: Design your implementation approach.
-3. **Write Plan**: Write a structured plan to the plan file including:
+3. **Write Plan**: Write a structured plan including:
    - **Context**: Why this change is needed
    - **Steps**: Implementation steps with critical file paths
    - **Verification**: How to test the changes
@@ -161,25 +111,14 @@ This is the ONLY file you are allowed to edit.
 
 IMPORTANT: When your plan is complete, you MUST call exit_plan_mode.
 Do NOT ask the user to approve — exit_plan_mode handles that.`;
-}
 ```
 
-This prompt accomplishes three things:
-1. **Constrains behavior**: Explicitly prohibits editing and shell access (dual safeguard with permission checks)
-2. **Declares the plan file**: Tells the model the only writable file path
-3. **Defines the workflow**: Explore -> Design -> Write -> Exit, ensuring the model doesn't skip steps
+The final "Do NOT ask the user to approve" is critical: without it, the model often asks "is this plan OK?" instead of calling `exit_plan_mode`, breaking the approval flow.
 
-The last sentence "Do NOT ask the user to approve" is crucial -- without it, the model frequently asks "Is this plan okay?" after writing the plan instead of calling `exit_plan_mode`, preventing the approval workflow from triggering.
+## Permission Integration (double guard)
 
-### Permission Integration
-
-Plan Mode's read-only constraint is enforced through `checkPermission()` (see [Chapter 6](/en/docs/06-permissions.md) for details):
-
-#### **TypeScript**
 ```typescript
-// tools.ts — Plan Mode handling in checkPermission()
-
-// plan mode: block all write/edit tools (except plan file) and shell
+// tools.ts — checkPermission()
 if (mode === "plan") {
   if (EDIT_TOOLS.has(toolName)) {
     const filePath = input.file_path || input.path;
@@ -192,150 +131,96 @@ if (mode === "plan") {
     return { action: "deny", message: "Shell commands blocked in plan mode" };
   }
 }
-
-// plan mode tools: always allow (handled in agent.ts)
 if (toolName === "enter_plan_mode" || toolName === "exit_plan_mode") {
   return { action: "allow" };
 }
 ```
 
-There's an elegant design here: **the plan file path is passed as a parameter to `checkPermission()`**. When the Agent tries to write a file, the permission check compares the target path against the plan file path -- only an exact match is allowed through. This means the system prompt's instruction to "only write the plan file" isn't just a suggestion -- it's a code-enforced constraint.
+**Plan file path is passed as parameter to `checkPermission`** — the target path must exactly match the plan file path to be allowed. System prompt guides (fewer invalid calls); permission check is the hard block.
 
-Dual safeguard:
-- **System prompt**: Guides the model not to attempt writing other files (reduces wasted API calls)
-- **Permission check**: Even if the model ignores the prompt, write operations are intercepted and return an error
+## Tool Execution
 
-### Tool Execution Logic
-
-`executePlanModeTool()` handles the execution of `enter_plan_mode` and `exit_plan_mode`:
-
-#### **TypeScript**
 ```typescript
-// agent.ts — executePlanModeTool()
-
+// agent.ts
 private async executePlanModeTool(name: string): Promise<string> {
   if (name === "enter_plan_mode") {
-    if (this.permissionMode === "plan") {
-      return "Already in plan mode.";
-    }
+    if (this.permissionMode === "plan") return "Already in plan mode.";
     this.prePlanMode = this.permissionMode;
     this.permissionMode = "plan";
     this.planFilePath = this.generatePlanFilePath();
     this.systemPrompt = this.baseSystemPrompt + this.buildPlanModePrompt();
     printInfo("Entered plan mode (read-only). Plan file: " + this.planFilePath);
-    return `Entered plan mode. You are now in read-only mode.\n\n` +
-      `Your plan file: ${this.planFilePath}\n` +
-      `Write your plan to this file. This is the only file you can edit.\n\n` +
-      `When your plan is complete, call exit_plan_mode.`;
+    return `Entered plan mode. You are now in read-only mode.\n\nYour plan file: ${this.planFilePath}\nWrite your plan to this file. This is the only file you can edit.\n\nWhen your plan is complete, call exit_plan_mode.`;
   }
 
   if (name === "exit_plan_mode") {
-    if (this.permissionMode !== "plan") {
-      return "Not in plan mode.";
-    }
-    // Read plan file contents
+    if (this.permissionMode !== "plan") return "Not in plan mode.";
     let planContent = "(No plan file found)";
     if (this.planFilePath && existsSync(this.planFilePath)) {
       planContent = readFileSync(this.planFilePath, "utf-8");
     }
 
-    // Interactive approval workflow
     if (this.planApprovalFn) {
       const result = await this.planApprovalFn(planContent);
-
       if (result.choice === "keep-planning") {
-        // User rejected — stay in plan mode, return feedback to model
         const feedback = result.feedback || "Please revise the plan.";
-        return `User rejected the plan and wants to keep planning.\n\n` +
-          `User feedback: ${feedback}\n\n` +
-          `Please revise your plan based on this feedback. When done, call exit_plan_mode again.`;
+        return `User rejected the plan and wants to keep planning.\n\nUser feedback: ${feedback}\n\nPlease revise your plan based on this feedback. When done, call exit_plan_mode again.`;
       }
 
-      // User approved — determine target permission mode
       let targetMode: PermissionMode;
       if (result.choice === "clear-and-execute" || result.choice === "execute") {
         targetMode = "acceptEdits";
       } else {
-        targetMode = this.prePlanMode || "default";  // manual-execute: restore original mode
+        targetMode = this.prePlanMode || "default";  // manual-execute
       }
 
-      // Exit plan mode
       this.permissionMode = targetMode;
       this.prePlanMode = null;
       const savedPlanPath = this.planFilePath;
       this.planFilePath = null;
       this.systemPrompt = this.baseSystemPrompt;
 
-      // Clear context (if clear-and-execute was chosen)
       if (result.choice === "clear-and-execute") {
         this.clearHistoryKeepSystem();
         this.contextCleared = true;
         printInfo(`Plan approved. Context cleared, executing in ${targetMode} mode.`);
-        return `User approved the plan. Context was cleared. Permission mode: ${targetMode}\n\n` +
-          `Plan file: ${savedPlanPath}\n\n## Approved Plan:\n${planContent}\n\nProceed with implementation.`;
+        return `User approved the plan. Context was cleared. Permission mode: ${targetMode}\n\nPlan file: ${savedPlanPath}\n\n## Approved Plan:\n${planContent}\n\nProceed with implementation.`;
       }
 
       printInfo(`Plan approved. Executing in ${targetMode} mode.`);
-      return `User approved the plan. Permission mode: ${targetMode}\n\n` +
-        `## Approved Plan:\n${planContent}\n\nProceed with implementation.`;
+      return `User approved the plan. Permission mode: ${targetMode}\n\n## Approved Plan:\n${planContent}\n\nProceed with implementation.`;
     }
 
-    // Fallback: exit directly when no approval function exists (e.g., sub-agent)
+    // Fallback: no approval fn (sub-Agent scenario)
     this.permissionMode = this.prePlanMode || "default";
     this.prePlanMode = null;
     this.planFilePath = null;
     this.systemPrompt = this.baseSystemPrompt;
-    printInfo("Exited plan mode. Restored to " + this.permissionMode + " mode.");
-    return `Exited plan mode. Permission mode restored to: ${this.permissionMode}\n\n` +
-      `## Your Plan:\n${planContent}`;
+    return `Exited plan mode. Permission mode restored to: ${this.permissionMode}\n\n## Your Plan:\n${planContent}`;
   }
-
   return `Unknown plan mode tool: ${name}`;
 }
 ```
 
-The core logic has three layers:
+## Approval (callback decoupled)
 
-1. **enter_plan_mode**: State switch + plan file creation + prompt injection. Idempotent design -- returns a hint rather than an error when already in plan mode.
-
-2. **exit_plan_mode (with approval function)**: Read plan file -> call approval callback -> handle based on user's choice:
-   - `keep-planning`: Don't exit plan mode; return user feedback as the tool result to the model
-   - `clear-and-execute`: Clear message history (free up context) -> switch to `acceptEdits`
-   - `execute`: Keep history -> switch to `acceptEdits`
-   - `manual-execute`: Restore the mode from before entering (user manually approves each edit)
-
-3. **exit_plan_mode (without approval function)**: Exit directly and restore the original mode. This branch is for the sub-agent scenario -- sub-agents don't need interactive user approval.
-
-### Approval Workflow
-
-Approval is injected via a callback function, decoupling the Agent from the UI layer:
-
-#### **TypeScript**
 ```typescript
-// cli.ts — Setting up the approval callback
-
+// cli.ts
 agent.setPlanApprovalFn((planContent: string) => {
   return new Promise((resolve) => {
-    printPlanForApproval(planContent);   // Display plan content
-    printPlanApprovalOptions();          // Display 4 options
-
+    printPlanForApproval(planContent);
+    printPlanApprovalOptions();
     const askChoice = () => {
       rl.question("  Enter choice (1-4): ", (answer) => {
         const choice = answer.trim();
-        if (choice === "1") {
-          resolve({ choice: "clear-and-execute" });
-        } else if (choice === "2") {
-          resolve({ choice: "execute" });
-        } else if (choice === "3") {
-          resolve({ choice: "manual-execute" });
-        } else if (choice === "4") {
+        if (choice === "1") resolve({ choice: "clear-and-execute" });
+        else if (choice === "2") resolve({ choice: "execute" });
+        else if (choice === "3") resolve({ choice: "manual-execute" });
+        else if (choice === "4") {
           rl.question("  Feedback (what to change): ", (feedback) => {
             resolve({ choice: "keep-planning", feedback: feedback.trim() || undefined });
           });
-        } else {
-          console.log("  Invalid choice. Enter 1, 2, 3, or 4.");
-          askChoice();  // Retry on invalid input
-        }
+        } else { console.log("  Invalid choice."); askChoice(); }
       });
     };
     askChoice();
@@ -343,96 +228,38 @@ agent.setPlanApprovalFn((planContent: string) => {
 });
 ```
 
-The UI portion displays the plan content and 4 options:
+Callback decouples UI — CLI uses readline, IDE can use GUI, tests can inject mocks; sub-Agents without approvalFn go the fallback path.
+
+## 4 Options
+
+| Option | Permission | Context | Scenario |
+|--------|-----------|---------|----------|
+| 1. Clear + Execute | → acceptEdits | Cleared | Plan complete, context already long, fresh start most efficient |
+| 2. Execute | → acceptEdits | Kept | Plan complete, execute directly |
+| 3. Manual | → Restore original | Kept | Plan OK but want per-edit approval |
+| 4. Keep Planning | Unchanged | Kept | Plan needs revision, feedback to continue tuning |
+
+## Three Entry Points
 
 ```typescript
-// ui.ts — Plan approval UI
+// 1. --plan CLI arg
+else if (args[i] === "--plan") permissionMode = "plan";
 
-export function printPlanForApproval(planContent: string) {
-  console.log(chalk.cyan("\n  ━━━ Plan for Approval ━━━"));
-  const lines = planContent.split("\n");
-  const maxLines = 60;
-  const display = lines.slice(0, maxLines);
-  for (const line of display) {
-    console.log(chalk.white("  " + line));
-  }
-  if (lines.length > maxLines) {
-    console.log(chalk.gray(`  ... (${lines.length - maxLines} more lines)`));
-  }
-  console.log(chalk.cyan("  ━━━━━━━━━━━━━━━━━━━━━━━━\n"));
-}
+// 2. /plan REPL command
+if (input === "/plan") { agent.togglePlanMode(); askQuestion(); return; }
 
-export function printPlanApprovalOptions() {
-  console.log(chalk.yellow("  Choose an option:"));
-  console.log("    1) Yes, clear context and execute — fresh start with auto-accept edits");
-  console.log("    2) Yes, and execute — keep context, auto-accept edits");
-  console.log("    3) Yes, manually approve edits — keep context, confirm each edit");
-  console.log("    4) No, keep planning — provide feedback to revise");
-}
+// 3. enter_plan_mode tool (Agent-initiated, needs tool_search activation)
 ```
-
-The four options are designed for different use cases:
-
-| Option | Permission Switch | Context | Use Case |
-|--------|------------------|---------|----------|
-| 1. Clear + Execute | -> acceptEdits | Cleared | Plan is solid, context is long, starting fresh is most efficient |
-| 2. Execute | -> acceptEdits | Kept | Plan is solid, Agent already has enough context to execute directly |
-| 3. Manual | -> Restore original mode | Kept | Plan is roughly okay, but want to approve each modification step by step |
-| 4. Keep Planning | Unchanged | Kept | Plan needs revision, provide feedback for the Agent to continue adjusting |
-
-### CLI Entry Points
-
-Plan Mode has three entry points:
-
-#### **TypeScript**
-```typescript
-// cli.ts — CLI arguments
-
-// 1. Command-line argument --plan
-} else if (args[i] === "--plan") {
-  permissionMode = "plan";
-
-// 2. REPL command /plan
-if (input === "/plan") {
-  const newMode = agent.togglePlanMode();
-  askQuestion();
-  return;
-}
-
-// 3. Agent autonomously calls enter_plan_mode tool (lazy-loaded via ToolSearch)
-```
-
-The difference between the three entry points:
-- `--plan`: Enter Plan Mode at startup; the entire session starts with planning
-- `/plan`: Switch mid-session, suitable for a "chat first, plan later" workflow
-- `enter_plan_mode` tool: The Agent decides on its own that it needs to plan before executing (requires activation via ToolSearch)
-
-## Design Decisions
-
-### Why Write Plan Files to Disk?
-
-Plan file persistence to `~/.claude/plans/` serves two purposes:
-
-1. **Required for the clear-and-execute option**: After clearing context, the plan content in conversation history is lost. But the plan file remains on disk, so the Agent can re-read it.
-2. **Available across sessions**: Users can see previous plans when restoring a session with `--resume`, or manually browse historical plan files.
-
-### Why Is Approval a Callback Instead of a Direct Implementation?
-
-`planApprovalFn` is an externally injected callback rather than a direct implementation inside the Agent. This keeps the Agent class independent of any specific UI implementation -- the CLI uses readline, an IDE integration could use a GUI dialog, and tests can inject mock functions. When a sub-agent has no approval function, it simply exits directly with no special handling needed.
-
-### Why Does Clear-and-Execute Switch to acceptEdits?
-
-Since the user has approved the plan and chosen automatic execution, they trust the Agent's direction of changes. Switching to `acceptEdits` lets the Agent proceed without repeatedly confirming each file edit, dramatically improving execution efficiency. If the user wants step-by-step approval, option 3 is specifically for that.
 
 ## Simplification Comparison
 
-| Dimension | Claude Code | mini-claude | Difference |
-|-----------|------------|-------------|------------|
-| Plan file | Global plans directory + semantic filenames | `~/.claude/plans/plan-{sessionId}.md` | Simplified naming |
-| Approval options | Multiple execution modes + permission prompts | 4 options (clear/execute/manual/revise) | Core alignment |
-| Permission integration | Deep integration (7-layer permission system) | checkPermission special branch + plan file whitelist | Simplified but equivalent |
-| Tool loading | Always available | deferred lazy loading | Saves prompt space |
-| Sub-agent | Plan Agent type | Fallback direct exit | Simplified branch |
+| Dimension | Claude Code | mini-claude |
+|-----------|------------|-------------|
+| Plan file | Global plans + semantic filenames | `~/.claude/plans/plan-{sessionId}.md` |
+| Approval options | Multiple execution modes | 4 options (clear/execute/manual/revise) |
+| Permission integration | Deep 7-layer permission system | `checkPermission` special branch + plan whitelist |
+| Tool loading | Always available | deferred lazy loading |
+| Sub-Agent | Plan Agent type | Fallback direct exit |
 
 ---
 

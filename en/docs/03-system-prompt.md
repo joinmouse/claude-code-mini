@@ -1,97 +1,37 @@
 # 3. System Prompt Engineering
 
-## Chapter Goals
-
-Construct a System Prompt that turns an LLM into a competent coding agent: telling it its identity, rules, tool usage strategies, and environment information.
+Tell the model: identity, rules, tool preferences, environment.
 
 ```mermaid
 graph TB
-    Template[SYSTEM_PROMPT_TEMPLATE<br/>Inline Markdown Template] --> Builder[buildSystemPrompt<br/>Variable Substitution]
-    CWD[Working Directory] --> Builder
-    Git[Git Info] --> Builder
-    ClaudeMD[CLAUDE.md<br/>Project Instructions] --> Builder
-    Memory[Memory System] --> Builder
-    Skills[Skills Descriptions] --> Builder
-    Agents[Agent Descriptions] --> Builder
+    Template[SYSTEM_PROMPT_TEMPLATE] --> Builder[buildSystemPrompt<br/>variable substitution]
+    CWD[Working directory] --> Builder
+    Git[Git info] --> Builder
+    ClaudeMD[CLAUDE.md] --> Builder
+    Memory[Memory] --> Builder
+    Skills[Skills] --> Builder
+    Agents[Agent descriptions] --> Builder
     Builder --> Final[Final System Prompt]
-    Final --> API[Passed to API<br/>system parameter]
 
     style Builder fill:#7c5cfc,color:#fff
     style Final fill:#e8e0ff
 ```
 
-## How Claude Code Does It
+## Reference: Claude Code's Approach
 
-Claude Code's System Prompt is not a haphazard pile of instructions -- it's an engineering artifact, iteratively refined through extensive A/B testing and model behavior observation.
+**7-layer progressive structure** (abstract → concrete): Identity → System → Doing Tasks → Actions → Using Tools → Tone & Style → Output Efficiency. Establish the framework first, then fill in specific behaviors — leveraging the model's tendency to interpret later content through earlier concepts.
 
-### 7-Layer Progressive Structure
+**Core techniques we keep**:
 
-The prompt is organized from abstract to concrete in 7 layers -- **first establishing the identity and constraint framework, then filling in specific behavioral guidance**. This order matters: concepts the model establishes first become the framework for understanding subsequent content.
+- **Anti-pattern inoculation**: Negative directives ("don't add docstrings to code you didn't change") outperform positive ones ("be concise") — they eliminate room for interpretation.
+- **Blast-radius framing**: Instead of enumerating rules, give the model a 2D evaluation model (reversibility × scope) so it can reason about unknown scenarios.
+- **Tool preference mapping**: `Read → cat/head/tail`, `Grep → grep/rg`, etc.; otherwise the model defaults to whatever bash is most common in its training data.
+- **CLAUDE.md 5-layer discovery**: Global policy → home → project (CWD upward walk) → local → CLI-specified. Nearer files loaded later, higher priority (recency effect).
 
-```
-1. Identity   -> Who am I? interactive agent
-2. System     -> Basic facts about the runtime environment
-3. Doing Tasks -> How to write code? (anti-pattern inoculation)
-4. Actions    -> Which operations need confirmation? (blast radius framework)
-5. Using Tools -> How to use tools? (preference mapping table)
-6. Tone & Style -> What output format?
-7. Output Efficiency -> How to be more concise?
-```
-
-### Anti-Pattern Inoculation
-
-**Explicitly telling the model "what not to do" is far more effective than only describing "what to do."**
-
-Positive instructions ("be concise") leave room for the model to self-rationalize -- it may think "adding comments makes code more concise and readable," then add docstrings to every function. Negative instructions ("don't add docstrings to code you didn't change") eliminate room for interpretation.
-
-Claude Code's Doing Tasks section has three precise "don'ts":
-
-- **Don't expand scope**: Fixing a bug doesn't mean refactoring surrounding code
-- **Don't code defensively**: Don't add try-catch and validation for impossible scenarios
-- **Don't abstract prematurely**: "Three similar lines of code is better than a premature abstraction"
-
-The value of these rules is not in the concepts (everyone knows "don't over-engineer"), but in the **precision of the wording** -- giving the model specific judgment criteria rather than vague principles.
-
-### Blast Radius Framework
-
-The Actions section doesn't enumerate "can't do X, Y, Z" -- instead it teaches the model a **risk assessment framework**:
-
-```
-Carefully consider the reversibility and blast radius of actions.
-```
-
-A two-dimensional model: **reversibility x impact scope**. High risk = irreversible + affects shared environments (force push, deleting cloud resources); low risk = reversible + local impact only (editing local files).
-
-This scales far better than exhaustive rules -- when the model encounters a new scenario not on the rule list (like calling an API to delete cloud resources), it can reason on its own rather than not knowing what to do.
-
-There's also a critical rule: a user approving one operation does not mean they approve all similar operations. Each authorization is valid only for the current scope.
-
-### Tool Preference Mapping Table
-
-Claude Code explicitly requires the model to use dedicated tools rather than bash commands in the prompt:
-
-```
-Use Read instead of cat/head/tail
-Use Edit instead of sed/awk
-Use Glob instead of find/ls
-Use Grep instead of grep/rg
-```
-
-Dedicated tools and bash commands are functionally similar at the low level; the difference is in user experience: permissions can be fine-grained (separate authorization for reads vs. writes), output is structured, and parallel calling is natively supported. Without this mapping table, the model defaults to what appears most in training data -- various bash commands.
-
-### CLAUDE.md Hierarchical Discovery
-
-CLAUDE.md is a project-level instruction file, similar to `.eslintrc` but for AI. Claude Code loads it from 5 locations: global admin policy -> user home directory -> project directory (traversing upward from CWD) -> local files -> command-line specified directory.
-
-Files closer to CWD are **loaded later with higher priority** -- leveraging the LLM's recency bias, subdirectory rules can override parent directory rules.
-
-## Our Implementation
-
-### SYSTEM_PROMPT_TEMPLATE
-
-The template is inline in `prompt.ts`, using `{{placeholder}}` to mark dynamic variables:
+## Our Template
 
 ```typescript
+// prompt.ts
 const SYSTEM_PROMPT_TEMPLATE = `You are Mini Claude Code, a lightweight coding assistant CLI.
 You are an interactive agent that helps users with software engineering tasks.
 
@@ -146,59 +86,12 @@ Shell: {{shell}}
 {{agents}}`;
 ```
 
-`{{memory}}`, `{{skills}}`, `{{agents}}` are placed at the end -- recency bias gives these dynamic contents higher weight (see Chapters 8 and 9 for details).
+`{{memory}}`, `{{skills}}`, `{{agents}}` are placed at the end — recency-effect weighted.
 
-### prompt.ts Implementation
+## buildSystemPrompt
 
-#### **TypeScript**
 ```typescript
-import { readFileSync, existsSync } from "fs";
-import { join, resolve } from "path";
-import { execSync } from "child_process";
-import * as os from "os";
-import { buildMemoryPromptSection } from "./memory.js";
-import { buildSkillDescriptions } from "./skills.js";
-import { buildAgentDescriptions } from "./subagent.js";
-import { getDeferredToolNames } from "./tools.js";
-
-export function loadClaudeMd(): string {
-  const parts: string[] = [];
-  let dir = process.cwd();
-  while (true) {
-    const file = join(dir, "CLAUDE.md");
-    if (existsSync(file)) {
-      try {
-        let content = readFileSync(file, "utf-8");
-        content = resolveIncludes(content, dir);  // @include resolution
-        parts.unshift(content);
-      } catch {}
-    }
-    const parent = resolve(dir, "..");
-    if (parent === dir) break;
-    dir = parent;
-  }
-  const rules = loadRulesDir(process.cwd());  // .claude/rules/*.md
-  const claudeMd = parts.length > 0
-    ? "\n\n# Project Instructions (CLAUDE.md)\n" + parts.join("\n\n---\n\n")
-    : "";
-  return claudeMd + rules;
-}
-
-export function getGitContext(): string {
-  try {
-    const opts = { encoding: "utf-8" as const, timeout: 3000 };
-    const branch = execSync("git rev-parse --abbrev-ref HEAD", opts).trim();
-    const log = execSync("git log --oneline -5", opts).trim();
-    const status = execSync("git status --short", opts).trim();
-    let result = `\nGit branch: ${branch}`;
-    if (log) result += `\nRecent commits:\n${log}`;
-    if (status) result += `\nGit status:\n${status}`;
-    return result;
-  } catch {
-    return "";
-  }
-}
-
+// prompt.ts
 export function buildSystemPrompt(): string {
   const date = new Date().toISOString().split("T")[0];
   const platform = `${os.platform()} ${os.arch()}`;
@@ -206,117 +99,24 @@ export function buildSystemPrompt(): string {
     ? (process.env.ComSpec || "cmd.exe")
     : (process.env.SHELL || "/bin/sh");
 
-  return SYSTEM_PROMPT_TEMPLATE
-    .split("{{cwd}}").join(process.cwd())
-    .split("{{date}}").join(date)
-    .split("{{platform}}").join(platform)
-    .split("{{shell}}").join(shell)
-    .split("{{git_context}}").join(getGitContext())
-    .split("{{claude_md}}").join(loadClaudeMd())
-    .split("{{memory}}").join(buildMemoryPromptSection())
-    .split("{{skills}}").join(buildSkillDescriptions())
-    .split("{{agents}}").join(buildAgentDescriptions());
+  const vars: Record<string, string> = {
+    cwd: process.cwd(), date, platform, shell,
+    git_context: getGitContext(),
+    claude_md: loadClaudeMd(),
+    memory: buildMemoryPromptSection(),
+    skills: buildSkillDescriptions(),
+    agents: buildAgentDescriptions(),
+  };
+  let out = SYSTEM_PROMPT_TEMPLATE;
+  for (const [k, v] of Object.entries(vars)) out = out.replaceAll(`{{${k}}}`, v);
+  return out;
 }
 ```
 
-### Simplification Trade-offs
-
-| Claude Code | mini-claude | Reason |
-|------------|-------------|--------|
-| Static/Dynamic cache boundary | Not implemented | Tutorial project doesn't need API cost optimization |
-| CLAUDE.md 5-layer discovery + .claude subdirectory | Traverse upward from CWD + .claude/rules/ | Covers common scenarios |
-| @include directive | Supports @./path, @~/path, @/path | Full implementation |
-| Anti-pattern inoculation (3 rules) | Fully preserved | Huge impact on output quality |
-| Blast radius framework | Fully preserved | Security cannot be simplified |
-| Tool preference mapping table | Adapted to tool names, preserved | Essential -- otherwise the model defaults to bash |
-| Deferred tool name injection | getDeferredToolNames() | Tells the model which tools can be activated on demand |
-
-### @include Syntax and Rules Auto-Loading
-
-CLAUDE.md files support `@` syntax to reference external files, enabling modular project configuration. Additionally, rule files in the `.claude/rules/*.md` directory are auto-loaded.
-
-#### **TypeScript**
-```typescript
-// prompt.ts -- @include resolution
-
-const INCLUDE_REGEX = /^@(\.\/[^\s]+|~\/[^\s]+|\/[^\s]+)$/gm;
-const MAX_INCLUDE_DEPTH = 5;
-
-function resolveIncludes(
-  content: string,
-  basePath: string,
-  visited: Set<string> = new Set(),
-  depth: number = 0
-): string {
-  if (depth >= MAX_INCLUDE_DEPTH) return content;
-  return content.replace(INCLUDE_REGEX, (_match, rawPath: string) => {
-    let resolved: string;
-    if (rawPath.startsWith("~/")) {
-      resolved = join(os.homedir(), rawPath.slice(2));
-    } else if (rawPath.startsWith("/")) {
-      resolved = rawPath;
-    } else {
-      resolved = resolve(basePath, rawPath);  // ./relative
-    }
-    resolved = resolve(resolved);
-    if (visited.has(resolved)) return `<!-- circular: ${rawPath} -->`;
-    if (!existsSync(resolved)) return `<!-- not found: ${rawPath} -->`;
-    try {
-      visited.add(resolved);
-      const included = readFileSync(resolved, "utf-8");
-      return resolveIncludes(included, dirname(resolved), visited, depth + 1);
-    } catch {
-      return `<!-- error reading: ${rawPath} -->`;
-    }
-  });
-}
-```
-
-Three path formats:
-- `@./relative/path` -- Relative to the directory containing the current CLAUDE.md
-- `@~/path` -- Relative to the user's home directory
-- `@/absolute/path` -- Absolute path
-
-Safeguards:
-- **visited Set** prevents circular references (A includes B, B includes A)
-- **MAX_INCLUDE_DEPTH = 5** prevents excessive nesting
-- Missing files leave an HTML comment marker rather than erroring out
-
-`.claude/rules/*.md` auto-loading:
-
-#### **TypeScript**
-```typescript
-// prompt.ts -- Rules directory loading
-
-function loadRulesDir(dir: string): string {
-  const rulesDir = join(dir, ".claude", "rules");
-  if (!existsSync(rulesDir)) return "";
-  const files = readdirSync(rulesDir).filter(f => f.endsWith(".md")).sort();
-  const parts: string[] = [];
-  for (const file of files) {
-    let content = readFileSync(join(rulesDir, file), "utf-8");
-    content = resolveIncludes(content, rulesDir);  // Rule files also support @include
-    parts.push(`<!-- rule: ${file} -->\n${content}`);
-  }
-  return parts.length > 0 ? "\n\n## Rules\n" + parts.join("\n\n") : "";
-}
-```
-
-Usage example:
-
-```markdown
-# CLAUDE.md
-@./.claude/rules/chinese-greeting.md
-@./docs/coding-style.md
-
-This project uses TypeScript with strict mode.
-```
-
-After loading, references are replaced with file contents. This lets teams put shared rules in the `.claude/rules/` directory, and CLAUDE.md only needs a one-line reference.
-
-loadClaudeMd integrates all three: upward CLAUDE.md traversal + @include resolution + rules directory:
+## CLAUDE.md Loading + @include
 
 ```typescript
+// prompt.ts
 export function loadClaudeMd(): string {
   const parts: string[] = [];
   let dir = process.cwd();
@@ -324,14 +124,14 @@ export function loadClaudeMd(): string {
     const file = join(dir, "CLAUDE.md");
     if (existsSync(file)) {
       let content = readFileSync(file, "utf-8");
-      content = resolveIncludes(content, dir);  // Each CLAUDE.md resolves @include
+      content = resolveIncludes(content, dir);       // @include resolution
       parts.unshift(content);
     }
     const parent = resolve(dir, "..");
     if (parent === dir) break;
     dir = parent;
   }
-  const rules = loadRulesDir(process.cwd());
+  const rules = loadRulesDir(process.cwd());          // .claude/rules/*.md
   const claudeMd = parts.length > 0
     ? "\n\n# Project Instructions (CLAUDE.md)\n" + parts.join("\n\n---\n\n")
     : "";
@@ -339,6 +139,41 @@ export function loadClaudeMd(): string {
 }
 ```
 
----
+## @include Resolution
 
-> **Next chapter**: With tools and prompts in place, the next step is making the Agent interactive -- CLI entry, REPL loop, and session persistence.
+```typescript
+// prompt.ts
+const INCLUDE_REGEX = /^@(\.\/[^\s]+|~\/[^\s]+|\/[^\s]+)$/gm;
+const MAX_INCLUDE_DEPTH = 5;
+
+function resolveIncludes(
+  content: string, basePath: string,
+  visited: Set<string> = new Set(), depth = 0
+): string {
+  if (depth >= MAX_INCLUDE_DEPTH) return content;
+  return content.replace(INCLUDE_REGEX, (_m, rawPath: string) => {
+    let resolved = rawPath.startsWith("~/") ? join(os.homedir(), rawPath.slice(2))
+                 : rawPath.startsWith("/")  ? rawPath
+                 :                            resolve(basePath, rawPath);
+    resolved = resolve(resolved);
+    if (visited.has(resolved)) return `<!-- circular: ${rawPath} -->`;
+    if (!existsSync(resolved)) return `<!-- not found: ${rawPath} -->`;
+    visited.add(resolved);
+    const included = readFileSync(resolved, "utf-8");
+    return resolveIncludes(included, dirname(resolved), visited, depth + 1);
+  });
+}
+```
+
+Three path forms: `@./relative`, `@~/home`, `@/absolute`. `visited` prevents cycles, `MAX_INCLUDE_DEPTH=5` limits nesting depth.
+
+`.claude/rules/*.md` are all auto-loaded — makes it easy for teams to share rules.
+
+## Simplification Comparison
+
+| Claude Code | mini-claude |
+|------------|-------------|
+| Static/Dynamic cache boundary for API-cost optimization | Not implemented |
+| CLAUDE.md 5-layer discovery + .claude subdirectory | CWD upward walk + `.claude/rules/` |
+| Anti-pattern inoculation × 3 + blast-radius framing + tool preference table | All kept (major impact on output quality) |
+| @include support | Supported (`@./`, `@~/`, `@/`) |

@@ -1,68 +1,35 @@
-# 4. CLI and Sessions
+# 4. CLI & Sessions
 
-## Chapter Goals
-
-Build the user interface layer: command-line argument parsing, interactive REPL, Ctrl+C interrupt handling, session persistence and recovery.
+Argument parsing, REPL, Ctrl+C interruption, session persistence.
 
 ```mermaid
 graph TB
-    Entry[cli.ts Entry] --> Parse[parseArgs<br/>Argument Parsing]
-    Parse --> |has prompt| OneShot[One-shot Mode<br/>agent.chat -> exit]
-    Parse --> |no prompt| REPL[REPL Mode<br/>readline loop]
-    Parse --> |--resume| Restore[Restore Session]
+    Entry[cli.ts entry] --> Parse[parseArgs]
+    Parse --> |has prompt| OneShot[One-shot mode]
+    Parse --> |no prompt| REPL[REPL]
+    Parse --> |--resume| Restore[Restore session]
     Restore --> REPL
     REPL --> |user input| Cmd{Command?}
-    Cmd -->|/clear| Clear[Clear History]
-    Cmd -->|/cost| Cost[Show Cost]
-    Cmd -->|/compact| Compact[Compact Context]
-    Cmd -->|/plan| Plan[Toggle Plan Mode]
-    Cmd -->|plain text| Chat[agent.chat]
-    Chat --> Save[Auto-save Session]
+    Cmd -->|/clear /cost /compact /plan| Handler[Command handler]
+    Cmd -->|Plain text| Chat[agent.chat]
+    Chat --> Save[Auto-save session]
 
     style Entry fill:#7c5cfc,color:#fff
     style REPL fill:#e8e0ff
 ```
 
-## How Claude Code Does It
+## Reference: Claude Code's Approach
 
-Claude Code's entry point is `src/entrypoints/cli.tsx` -- using React/Ink to bring the component model into the terminal, supporting streaming Markdown rendering, Vim mode, multi-tab, keyboard customization. Sessions use JSONL format with append-only writes, making them crash-safe.
+- **Entry** `src/entrypoints/cli.tsx` — React/Ink component model transplanted into the terminal, supporting streaming Markdown, Vim mode, multi-tab
+- **Observable autonomy**: Agent acts freely + user sees each step in real-time. Interruption cost ≪ undo cost, so the user can Ctrl+C within 3 seconds
+- **JSONL append-only**: O(1) writes; a crash loses at most the last line. Compare to whole-JSON overwrite writes (which get slower over long conversations + risk corruption on crash)
 
-### Terminal-Native vs GUI
+We simplify: plain readline REPL + whole-JSON save (JSONL is not necessary at tutorial scale).
 
-This is a deliberate choice. Developers' workflows live in the terminal -- opening a browser means a context switch. Being terminal-native makes it just another command-line tool, embedded into existing workflows alongside `git`, `grep`, etc. Specific benefits: works over SSH, can accept pipes (`echo "fix" | claude`), supports tmux multi-instance parallelism, near-zero memory overhead.
+## Argument Parsing
 
-React/Ink's role is to compensate for the terminal's interaction limitations -- with the component model, complex UIs like streaming output and diff views become maintainable.
-
-### Observable Autonomy
-
-The core UX principle of Claude Code: **the Agent acts freely, but lets the user see every step in real time**.
-
-```
-read_file src/app.ts
-  1 | import express from ...
-  ... (1234 chars total)
-
-edit_file src/app.ts
-  - const port = 3000
-  + const port = process.env.PORT
-```
-
-The cost of interrupting is far lower than the cost of undoing. Users can hit Ctrl+C within 3 seconds of the Agent going in the wrong direction, rather than waiting 20 seconds for it to finish and then spending even more time undoing. Each tool has 4 rendering methods (start/complete/denied/error), long-running tools stream stdout in real time rather than waiting until completion to display.
-
-### JSONL Session Storage
-
-Whole-JSON overwrite has two problems: a crash mid-write corrupts the entire file; the longer the conversation, the slower each save.
-
-JSONL appends one line per turn, O(1) writes, and a crash loses at most the last line. The filesystem's append operation is typically atomic. Recovery parses line by line, skipping any incomplete line at the end.
-
-## Our Implementation
-
-### Argument Parsing
-
-#### **TypeScript**
 ```typescript
-// cli.ts -- parseArgs
-
+// cli.ts
 function parseArgs(): ParsedArgs {
   const args = process.argv.slice(2);
   let permissionMode: PermissionMode = "default";
@@ -74,83 +41,57 @@ function parseArgs(): ParsedArgs {
   const positional: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--yolo" || args[i] === "-y") {
-      permissionMode = "bypassPermissions";
-    } else if (args[i] === "--plan") {
-      permissionMode = "plan";
-    } else if (args[i] === "--accept-edits") {
-      permissionMode = "acceptEdits";
-    } else if (args[i] === "--dont-ask") {
-      permissionMode = "dontAsk";
-    } else if (args[i] === "--thinking") {
-      thinking = true;
-    } else if (args[i] === "--model" || args[i] === "-m") {
-      model = args[++i] || model;
-    } else if (args[i] === "--resume") {
-      resume = true;
-    } else if (args[i] === "--max-cost") {
-      const v = parseFloat(args[++i]);
-      if (!isNaN(v)) maxCost = v;
-    } else if (args[i] === "--max-turns") {
-      const v = parseInt(args[++i], 10);
-      if (!isNaN(v)) maxTurns = v;
-    } else if (args[i] === "--help" || args[i] === "-h") {
-      console.log(`Usage: mini-claude [options] [prompt] ...`);
-      process.exit(0);
-    } else {
-      positional.push(args[i]);
-    }
+    if (args[i] === "--yolo" || args[i] === "-y")  permissionMode = "bypassPermissions";
+    else if (args[i] === "--plan")                 permissionMode = "plan";
+    else if (args[i] === "--accept-edits")         permissionMode = "acceptEdits";
+    else if (args[i] === "--dont-ask")             permissionMode = "dontAsk";
+    else if (args[i] === "--thinking")             thinking = true;
+    else if (args[i] === "--model" || args[i] === "-m") model = args[++i] || model;
+    else if (args[i] === "--resume")               resume = true;
+    else if (args[i] === "--max-cost")  { const v = parseFloat(args[++i]); if (!isNaN(v)) maxCost = v; }
+    else if (args[i] === "--max-turns") { const v = parseInt(args[++i], 10); if (!isNaN(v)) maxTurns = v; }
+    else if (args[i] === "--help" || args[i] === "-h") { console.log("Usage: mini-claude ..."); process.exit(0); }
+    else positional.push(args[i]);
   }
 
-  return {
-    permissionMode, model, resume, thinking, maxCost, maxTurns,
-    prompt: positional.length > 0 ? positional.join(" ") : undefined,
-  };
+  return { permissionMode, model, resume, thinking, maxCost, maxTurns,
+           prompt: positional.length > 0 ? positional.join(" ") : undefined };
 }
 ```
 
-The TypeScript version uses a hand-written loop instead of commander.js, since there are only 11 arguments -- zero dependencies is lighter. It uses `for` instead of `forEach` because value-taking arguments (`--model claude-sonnet`) need `++i` to skip to the next element.
+10 flags, hand-written loop, zero dependencies. Value-taking flags (`--model X`) use `++i` to jump to the next element.
 
-### Two Execution Modes
+## main: One-shot vs REPL
 
-#### **TypeScript**
 ```typescript
-// cli.ts -- main
-
+// cli.ts
 async function main() {
   const { permissionMode, model, prompt, resume, thinking, maxCost, maxTurns } = parseArgs();
 
-  // API key from environment variables, not command-line (to avoid leaking into shell history)
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    printError(`API key is required. Set ANTHROPIC_API_KEY env var.`);
-    process.exit(1);
-  }
+  if (!apiKey) { printError("API key required. Set ANTHROPIC_API_KEY."); process.exit(1); }
 
-  const agent = new Agent({ permissionMode, model, apiKey, thinking, maxCost, maxTurns });
+  const agent = new Agent({
+    permissionMode, model, thinking, maxCostUsd: maxCost, maxTurns, apiKey,
+    baseURL: process.env.ANTHROPIC_BASE_URL,
+  });
 
   if (resume) {
     const sessionId = getLatestSessionId();
-    if (sessionId) {
-      const session = loadSession(sessionId);
-      if (session) agent.restoreSession(session);
-    }
+    if (sessionId) { const s = loadSession(sessionId); if (s) agent.restoreSession(s); }
   }
 
-  if (prompt) {
-    await agent.chat(prompt);       // One-shot mode: execute then exit
-  } else {
-    await runRepl(agent);           // REPL mode: interactive loop
-  }
+  if (prompt) await agent.chat(prompt);
+  else        await runRepl(agent);
 }
 ```
 
-### REPL Implementation
+API key is read only from env — no CLI arg support (avoids leaking to shell history).
 
-#### **TypeScript**
+## REPL
+
 ```typescript
-// cli.ts -- runRepl
-
+// cli.ts
 async function runRepl(agent: Agent) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -171,48 +112,33 @@ async function runRepl(agent: Agent) {
 
   printWelcome();
 
-  // rl.once instead of rl.on: ensures strict serialization, prevents multiple chats from concurrently modifying message history
+  // rl.once ensures strict serialization: concurrent chats would corrupt message history
   const askQuestion = (): void => {
     printUserPrompt();
     rl.once("line", async (line) => {
       const input = line.trim();
       sigintCount = 0;
-
       if (!input) { askQuestion(); return; }
       if (input === "exit" || input === "quit") { console.log("\nBye!\n"); process.exit(0); }
-
-      if (input === "/clear") { agent.clearHistory(); askQuestion(); return; }
-      if (input === "/cost")  { agent.showCost(); askQuestion(); return; }
-      if (input === "/compact") {
-        try { await agent.compact(); } catch (e: any) { printError(e.message); }
-        askQuestion(); return;
-      }
-      if (input === "/plan") { agent.togglePlanMode(); askQuestion(); return; }
-
-      try {
-        await agent.chat(input);
-      } catch (e: any) {
-        if (e.name !== "AbortError" && !e.message?.includes("aborted")) printError(e.message);
-      }
-
+      if (input === "/clear")   { agent.clearHistory(); askQuestion(); return; }
+      if (input === "/cost")    { agent.showCost();     askQuestion(); return; }
+      if (input === "/compact") { try { await agent.compact(); } catch (e: any) { printError(e.message); } askQuestion(); return; }
+      if (input === "/plan")    { agent.togglePlanMode(); askQuestion(); return; }
+      try { await agent.chat(input); }
+      catch (e: any) { if (e.name !== "AbortError" && !e.message?.includes("aborted")) printError(e.message); }
       askQuestion();
     });
   };
-
   askQuestion();
 }
 ```
 
-**Dual semantics of Ctrl+C**: While processing, pressing it -> interrupts the current operation and returns to the input prompt; while idle, pressing it -> first time shows a reminder, second time exits. This avoids two undesirable scenarios: accidentally pressing Ctrl+C and losing the entire session, and watching helplessly while the Agent runs off track.
+**Ctrl+C dual semantics**: while processing → interrupt; while idle → first press warns, second exits. Prevents both accidental session loss and stuck agents you can't interrupt.
 
-**`rl.once` vs `rl.on`**: A handler registered with `rl.on` responds to the next line of input without waiting for `await agent.chat()` to complete, causing multiple chats to concurrently modify message history. `rl.once` listens for only one line at a time, recursively re-registering after processing -- naturally serial.
+## Session Persistence
 
-### Session Persistence
-
-#### **TypeScript**
 ```typescript
 // session.ts
-
 const SESSION_DIR = join(homedir(), ".mini-claude", "sessions");
 
 export function saveSession(id: string, data: SessionData): void {
@@ -226,12 +152,7 @@ export function getLatestSessionId(): string | null {
   sessions.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
   return sessions[0].id;
 }
-```
 
-Auto-saves after each `agent.chat()` completes; save failures are silently ignored (a full disk shouldn't crash the entire conversation). Recovery simply loads the message array back into the Agent:
-
-#### **TypeScript**
-```typescript
 // agent.ts
 private autoSave() {
   try {
@@ -240,25 +161,16 @@ private autoSave() {
                   startTime: this.sessionStartTime, messageCount: this.getMessageCount() },
       anthropicMessages: this.anthropicMessages,
     });
-  } catch {}
-}
-
-restoreSession(data: { anthropicMessages?: any[] }) {
-  if (data.anthropicMessages) this.anthropicMessages = data.anthropicMessages;
-  printInfo(`Session restored (${this.getMessageCount()} messages).`);
+  } catch {}  // A full disk shouldn't crash the conversation
 }
 ```
 
-### Terminal UI -- ui.ts
+## UI Output
 
-All output is uniformly formatted through `ui.ts`:
-
-#### **TypeScript**
 ```typescript
-// ui.ts (using chalk)
-
+// ui.ts
 export function printToolCall(name: string, input: Record<string, any>) {
-  const icon = getToolIcon(name);      // read_file -> book icon, run_shell -> computer icon
+  const icon = getToolIcon(name);        // read_file → 📖, run_shell → 💻
   const summary = getToolSummary(name, input);
   console.log(chalk.yellow(`\n  ${icon} ${name}`) + chalk.gray(` ${summary}`));
 }
@@ -272,6 +184,4 @@ export function printToolResult(name: string, result: string) {
 }
 ```
 
-Tool results are truncated to 500 characters at the UI layer -- this display is for humans; the complete result is already in the message history.
-
-> **Next chapter**: Making the Agent's output appear in real time -- streaming output.
+UI truncates to 500 chars (for humans); the full result is still in the message history.

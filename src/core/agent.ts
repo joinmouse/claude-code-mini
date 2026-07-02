@@ -1,8 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import chalk from "chalk";
 import {
-  toolDefinitions, executeTool, checkPermission, CONCURRENCY_SAFE_TOOLS,
-  getActiveToolDefinitions, getDeferredToolNames,
+  toolDefinitions, executeTool, checkPermission, CONCURRENCY_SAFE_TOOLS, getActiveToolDefinitions,
 } from "./tools.js";
 import type { ToolDef, PermissionMode } from "./types.js";
 import {

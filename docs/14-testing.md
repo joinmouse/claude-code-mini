@@ -1,8 +1,6 @@
 # 14. 功能测试指南
 
-## 本章目标
-
-验证 mini-claude 的 19 项核心功能都正常工作。所有测试均为手动执行 + 目视验证，全部使用 `--yolo` 模式（跳过权限确认）。
+19 项手动测试，全用 `--yolo`。Agent 行为依赖 LLM 响应不确定 —— 参考 Claude Code 自身也是核心工具单测 + Agent 行为人工 QA。
 
 ```mermaid
 graph LR
@@ -14,108 +12,65 @@ graph LR
     style Test fill:#e8e0ff
 ```
 
-## 为什么需要手动测试
-
-Coding Agent 的测试和普通软件不同——核心行为取决于 LLM 的响应，输出不确定。自动化单元测试能覆盖工具函数（文件读写、权限检查），但端到端的 Agent 行为只能人工观察：
-
-- 模型是否正确选择了工具？
-- 并行执行真的是并行的吗？
-- 语义记忆召回的时机对不对？
-- Plan mode 的审批流程交互是否流畅？
-
-Claude Code 自身也采用类似策略：核心工具有单元测试，但 Agent 行为依赖人工 QA + 评估套件（eval suite）。
-
 ## 准备
 
 ```bash
 cd claude-code-from-scratch
-
-# 一键配置测试环境（MCP、Skills、CLAUDE.md、大文件、引号测试文件、自定义 Agent）
-bash test/setup.sh
-
-# 构建项目
+bash test/setup.sh   # MCP、Skills、CLAUDE.md、大文件、引号测试、自定义 Agent
 npm run build
+
+# .env
+# ANTHROPIC_API_KEY=sk-xxx
+# ANTHROPIC_BASE_URL=https://aihubmix.com
 ```
 
-确保 `.env` 已配置好 API Key：
-```
-ANTHROPIC_API_KEY=sk-xxx
-ANTHROPIC_BASE_URL=https://aihubmix.com   # 可选
-```
-
-## 启动方式
+## 启动
 
 ```bash
-# 交互式 REPL（推荐，能测 skill、plan mode 和 REPL 命令）
-node dist/cli.js --yolo
-
-# one-shot 模式
-node dist/cli.js --yolo "你的提示词"
+node dist/cli.js --yolo                # REPL
+node dist/cli.js --yolo "prompt"       # one-shot
 ```
 
 ---
 
-## Phase 1: 基础工具 (Test 1-3)
+## Phase 1：基础工具
 
-### 1. MCP 工具调用
+### 1. MCP
 
-**测试目标**：验证 MCP 服务器连接 + 工具发现 + 透明路由。
-
-**预期**：启动时看到 `[mcp] Connected to 'test' — 3 tools`
+启动看到 `[mcp] Connected to 'test' — 3 tools`。
 
 ```
 Use the MCP 'add' tool to compute 17+25, then use the 'echo' tool to echo "hello MCP", then use the 'timestamp' tool.
 ```
 
-✅ 预期输出：
-- add 返回 `42`
-- echo 返回 `hello MCP`
-- timestamp 返回一个 Unix 时间戳
-- 工具名带 `mcp__test__` 前缀
-
-**设计意图**：MCP 是 Agent 能力扩展的核心机制。三段式命名 `mcp__server__tool` 既解决了命名冲突，又隐含了路由信息——从名字就知道该转发到哪个服务器。
-
----
+✅ add=42，echo=hello MCP，timestamp=Unix，工具名带 `mcp__test__` 前缀。
 
 ### 2. WebFetch
-
-**测试目标**：验证 HTTP 获取 + HTML 清洗。
 
 ```
 Fetch the URL https://httpbin.org/json and tell me the slideshow title.
 ```
-
-✅ 预期：返回 `Sample Slide Show`
+✅ `Sample Slide Show`
 
 ```
 Fetch https://example.com and tell me what the page is about.
 ```
-
-✅ 预期：返回 HTML 转换后的纯文本内容
-
----
+✅ HTML 转纯文本。
 
 ### 3. 并行工具执行
-
-**测试目标**：验证并发安全的工具可以同时执行（不是串行）。
 
 ```
 Read the files src/frontmatter.ts, src/session.ts, and src/skills.ts at the same time, then tell me each file's line count.
 ```
-
-✅ 预期：多个 `read_file` 调用同时出现（不是一个一个来的）
-
-**设计意图**：`CONCURRENCY_SAFE_TOOLS`（read_file、list_files、grep_search、web_fetch）标记为可并行，Agent 在流式输出阶段就开始执行这些工具，不等模型生成完毕。
+✅ 多个 `read_file` 同时（非串行）。`CONCURRENCY_SAFE_TOOLS`（read/list/grep/web_fetch）流式提前执行。
 
 ---
 
-## Phase 2: 记忆与上下文 (Test 4-7)
+## Phase 2：记忆与上下文
 
 ### 4. 语义记忆召回
 
-**测试目标**：验证记忆保存 → 新对话中语义召回（异步 prefetch 机制）。
-
-**第一步：保存记忆**
+**保存**：
 ```
 Save these memories for me:
 1. type=project, name="API migration", description="Moving from REST to GraphQL", content="We are migrating our API from REST to GraphQL. Deadline is end of Q2 2025."
@@ -123,287 +78,155 @@ Save these memories for me:
 3. type=reference, name="staging server", description="Staging environment URL", content="Staging server: https://staging.example.com, credentials in 1Password."
 ```
 
-✅ 预期：三个 memory 文件被写入
-
-**第二步：退出，重新启动一个新对话**，然后输入会触发工具调用的查询：
-
-> **原理**：语义召回是异步 prefetch（和 Claude Code 行为一致，zero-wait 不阻塞）。
-> prefetch 在用户消息发出时启动，需要几秒完成。如果模型直接文本回答不调工具，
-> 循环只跑一次就结束了，prefetch 来不及被消费。所以测试查询需要能触发工具调用，
-> 给 prefetch 足够时间在第二轮 iteration 被注入。
+**退出重启后**（异步 prefetch 需几秒完成，测试要能触发工具调用给 prefetch 时间在第二轮 iteration 注入）：
 
 ```
 Read the file tsconfig.json, then tell me: where can I deploy to test my changes?
 ```
-✅ 预期：召回 staging server 记忆，回答 `https://staging.example.com`
+✅ `https://staging.example.com`
 
 ```
 List the files in the src/ directory, then tell me: what's the deadline for the backend rewrite?
 ```
-✅ 预期：召回 API migration 记忆，回答 `end of Q2 2025`
+✅ `end of Q2 2025`
 
 ```
 Read package.json, then tell me: how should I write code for this project?
 ```
-✅ 预期：召回 code style 记忆，提到 functional programming
+✅ 提到 functional programming。
 
----
+### 5. @include + Rules 自动加载
 
-### 5. @include 指令 + Rules 自动加载
-
-**测试目标**：验证 CLAUDE.md 的 `@path` 包含指令和 `.claude/rules/` 自动加载。
-
-setup.sh 已经创建了：
-- `CLAUDE.md` 包含 `@./.claude/rules/chinese-greeting.md`
-- rule 内容：`When the user greets you, respond in Chinese`
+setup.sh 已建：`CLAUDE.md` 含 `@./.claude/rules/chinese-greeting.md`；rule 内容 `When the user greets you, respond in Chinese`。
 
 ```
 Hello! Who are you?
 ```
+✅ **中文**回复。
 
-✅ 预期：模型用**中文**回复（因为 rule 要求打招呼时说中文）
-
-**设计意图**：`@include` 机制支持 `@./相对路径`、`@~/Home路径`、`@/绝对路径` 三种格式，有循环引用检测和最大深度限制（5 层）。Rules 目录下的所有 `.md` 文件按字母排序后拼接到 system prompt 中。
-
----
-
-### 6. Read-before-edit 保护
-
-**测试目标**：验证编辑未读文件时的安全检查。
+### 6. Read-before-edit
 
 ```
 Edit the file package.json and change the version to "9.9.9". Do NOT read it first.
 ```
-
-✅ 预期（两种可能都算通过）：
-- **最佳**：工具层直接返回 `Error: You must read this file before editing`
-- **次佳**：模型因 system prompt 要求，自动先 read 再 edit
-
-测完记得恢复：
-```
-Now change it back to "1.0.0".
-```
-
----
+✅ 工具返回 `Error: You must read this file before editing`，或模型自动先 read。测完 `Now change it back to "1.0.0".`
 
 ### 7. 大结果持久化
-
-**测试目标**：验证超大工具结果写入磁盘 + 预览截断。
 
 ```
 Read the file test/large-file.txt
 ```
+✅ `[Result too large (XX.X KB, 1000 lines). Full output saved to ...]` + `Preview (first 200 lines):`
 
-✅ 预期输出包含：
-- `[Result too large (XX.X KB, 1000 lines). Full output saved to ...]`
-- `Preview (first 200 lines):`
-- 只显示前 200 行的预览
-
-然后继续问：
 ```
 What does line 500 say?
 ```
-
-✅ 预期：模型用 grep_search 或 read_file 从原文件找到 Line 499 的内容
-
-**设计意图**：超过 30KB 的工具结果写入 `~/.mini-claude/tool-results/`，conversation 中只保留预览。这防止一个大文件把整个上下文窗口撑爆。和 Claude Code 的 `LargeResultPersistence` 逻辑对齐。
+✅ 用 grep_search 或 read_file 从原文件找。
 
 ---
 
-## Phase 3: 技能与工具扩展 (Test 8-10)
+## Phase 3：技能与工具扩展
 
-### 8. Skill 调用
-
-**测试目标**：验证 skill 发现、inline 调用、slash command。
+### 8. Skill
 
 ```
-/skills
+/skills           → 列出 greet 和 commit
+/greet Alice      → 个性化问候
+/commit           → git diff/status → 尝试 commit
 ```
-✅ 预期：列出 greet 和 commit 两个 skill
 
-```
-/greet Alice
-```
-✅ 预期：模型生成一段对 Alice 的个性化问候
-
-```
-/commit
-```
-✅ 预期：模型执行 git diff/status，然后尝试创建 commit
-
----
-
-### 9. ToolSearch / 延迟加载工具
-
-**测试目标**：验证 deferred tool 机制——plan mode 工具初始不发送 schema，搜索后才激活。
+### 9. ToolSearch 延迟加载
 
 ```
 Use tool_search to find the "plan mode" tool.
 ```
-
-✅ 预期：
-- 模型调用 `tool_search`
-- 返回 `enter_plan_mode` 和/或 `exit_plan_mode` 的完整 schema
-- 这些工具之前不在工具列表中，被搜索后才激活
-
-**设计意图**：Deferred tools 减少每次 API 调用发送的工具 schema 大小。Claude Code 有 60+ 工具，但大部分场景只用 5-6 个。发送全部 schema 浪费 token，延迟加载按需激活。
-
----
+✅ 返回 `enter_plan_mode` / `exit_plan_mode` 完整 schema（之前不在工具列表）。
 
 ### 10. REPL 命令
 
 ```
-/cost
+/cost      → token 用量 + 费用
+/memory    → 已保存记忆
+/compact   → 手动触发压缩
+/plan      → 切换 plan mode
 ```
-✅ 显示 token 用量和费用
-
-```
-/memory
-```
-✅ 列出已保存的记忆
-
-```
-/compact
-```
-✅ 手动触发对话压缩
-
-```
-/plan
-```
-✅ 切换到 plan mode（再输入一次切回来）
 
 ---
 
-## Phase 4: Agent 架构 (Test 11-12)
+## Phase 4：Agent 架构
 
-### 11. Sub-agent 系统（Agent Tool）
+### 11. Sub-agent（3 类型）
 
-**测试目标**：验证三种内置 agent 类型的隔离执行和工具限制。
-
-**explore agent**（只读搜索）：
+**explore**（只读）：
 ```
 Use the agent tool with type "explore" to find all files that import from "./memory.js" in the src/ directory.
 ```
+✅ `[sub-agent:explore]` 标记，只用 read/list/grep。
 
-✅ 预期：
-- 输出显示 `[sub-agent:explore]` 标记
-- 返回引用 `memory.js` 的文件列表
-- 只使用 read_file / list_files / grep_search
-
-**plan agent**（结构化规划）：
+**plan**（结构化）：
 ```
 Use the agent tool with type "plan" to design a plan for adding a "help" REPL command. Identify which files need modification.
 ```
+✅ `[sub-agent:plan]` + 结构化计划。
 
-✅ 预期：输出显示 `[sub-agent:plan]` 标记，返回结构化修改计划
-
-**general agent**（完整工具）：
+**general**（完整）：
 ```
 Use the agent tool with type "general" to create a file called /tmp/mini-claude-agent-test.txt with the content "agent test passed", then read it back.
 ```
+✅ `[sub-agent:general]`；token 累加到主（`/cost` 可见）。
 
-✅ 预期：
-- 输出显示 `[sub-agent:general]` 标记
-- 成功创建并读取文件
-- sub-agent 的 token 消耗累加到主 agent（`/cost` 可见）
+### 12. Plan Mode
 
-**设计意图**：Sub-agent 是 Claude Code 的"分治"策略——把大任务拆给子 agent，各自独立上下文，不污染主对话。explore agent 限制为只读工具防止意外修改，general agent 排除了 agent 工具防止无限递归。
-
----
-
-### 12. Plan Mode（手动进入）
-
-**测试目标**：验证 `/plan` 切换 + 只读限制 + plan file 写入 + 审批流程。
-
-**第一步：进入 plan mode**
 ```
 /plan
 ```
-✅ 预期：显示 plan mode 已开启
+✅ 显示 plan mode 已开启。
 
-**第二步：测试只读限制**
 ```
 Read package.json, then create a plan for changing the project name. Write your plan to the plan file.
 ```
+✅ 能 read；能写 plan file；写其它文件被拒 `Blocked in plan mode`。
 
-✅ 预期：
-- 模型能读取 package.json（read 工具始终允许）
-- 模型写入 plan file（唯一允许编辑的文件）
-- 如果尝试编辑其他文件，被拒绝：`Blocked in plan mode`
+`exit_plan_mode` 后 4 选项：选 `4`（keep-planning）反馈 → 修改后再次 exit_plan_mode 选 `1`（clear-and-execute）。
 
-**第三步：审批流程**
-
-等模型调用 `exit_plan_mode` 后，出现 4 个选项：
-1. 选择 `4`（keep-planning），输入反馈："Also add a step for updating README"
-2. 模型修改计划后再次 exit_plan_mode，选择 `1`（clear-and-execute）
-
-✅ 预期：选择 1 后上下文清理，切换到执行模式
-
-**第四步：退出 plan mode**
 ```
-/plan
+/plan       → 切回普通模式
 ```
-✅ 预期：切换回普通模式
-
-**设计意图**：Plan mode 是 Claude Code 的"先想后做"机制。限制为只读 + plan file 写入，防止模型在规划阶段就开始改代码。四选一审批让用户掌控执行方式——可以保留上下文执行（2），也可以清空上下文再执行（1），避免 plan 内容本身占用 token 预算。
 
 ---
 
-## Phase 5: 编辑与搜索 (Test 13, 17-18)
+## Phase 5：编辑与搜索
 
-### 13. Edit 的引号规范化
-
-**测试目标**：验证 edit_file 的 curly quote → straight quote 回退匹配。
+### 13. Edit 引号规范化
 
 ```
 Read the file test/quote-test.js
 ```
 
-然后要求使用弯引号编辑：
+用弯引号编辑：
 ```
 Use edit_file on test/quote-test.js. In the old_string, use curly double quotes (Unicode U+201C and U+201D) around "Hello World". Replace with straight quotes saying "Hi Universe".
 ```
+✅ 输出 `(matched via quote normalization)`。测完 `Edit test/quote-test.js, replace "Hi Universe" with "Hello World"`。
 
-✅ 预期：
-- 编辑成功，输出包含 `(matched via quote normalization)`
-- 文件内容从 `"Hello World"` 变为 `"Hi Universe"`
-
-测完恢复：
-```
-Edit test/quote-test.js, replace "Hi Universe" with "Hello World"
-```
-
-**设计意图**：LLM 输出和用户从文档复制的文本经常包含 Unicode 弯引号（`“”`、`‘’`）。Claude Code 的 `normalizeQuotes` 函数先尝试精确匹配，失败后将两边都规范化为直引号再匹配，避免"找不到要替换的内容"的常见报错。
-
----
-
-### 17. Grep Search 工具
-
-**测试目标**：验证正则搜索 + include 文件过滤。
+### 17. Grep Search
 
 ```
 Use grep_search to find all lines containing "import.*chalk" in the src/ directory
 ```
-
-✅ 预期：返回 `src/agent.ts` 和/或 `src/ui.ts` 中的匹配行，格式为 `文件路径:行号:匹配内容`
+✅ `文件路径:行号:匹配内容`
 
 ```
 Use grep_search to find the pattern "export function" in all .ts files under src/
 ```
-
-✅ 预期：使用 `include: "*.ts"` 过滤，返回所有导出函数的位置
+✅ `include: "*.ts"` 过滤。
 
 ```
 Use grep_search to find "DANGEROUS_PATTERNS" in the project
 ```
+✅ 定位到 `src/tools.ts`。
 
-✅ 预期：返回 `src/tools.ts` 中的定义位置
-
----
-
-### 18. Write File（新文件 + 自动建目录）
-
-**测试目标**：验证文件创建、目录自动创建、内容预览截断。
+### 18. Write File
 
 ```
 Create a new file at test/tmp/nested/hello.txt with the content:
@@ -411,142 +234,98 @@ Line 1: Hello from Mini Claude
 Line 2: This is a write test
 Line 3: End of file
 ```
-
-✅ 预期：
-- 目录 `test/tmp/nested/` 自动创建
-- 返回 `Successfully wrote to test/tmp/nested/hello.txt (3 lines)` 和行号预览
+✅ 目录自动建，返回 `Successfully wrote to ... (3 lines)` + 预览。
 
 ```
 Read the file test/tmp/nested/hello.txt to verify.
 ```
-✅ 预期：内容完整
+✅ 内容完整。
 
-测试长文件预览截断：
+长文件预览截断：
 ```
 Create a file test/tmp/long-file.txt with 50 numbered lines like "Line 1: test data", etc.
 ```
-
-✅ 预期：预览只显示前 30 行，末尾显示 `... (50 lines total)`
+✅ 只显示前 30 行 + `... (50 lines total)`。
 
 ---
 
-## Phase 6: 会话与 CLI (Test 14-16)
+## Phase 6：会话与 CLI
 
-### 14. Session Resume（--resume）
+### 14. Session Resume
 
-**测试目标**：验证会话保存和跨进程恢复。
-
-**第一次会话**：
+**第一次**：
 ```bash
 node dist/cli.js --yolo
 ```
 ```
 Remember this: The secret code is BANANA-42. Read package.json and tell me the version.
 ```
-然后 `exit` 退出。
+`exit` 退出。
 
-**第二次会话（恢复）**：
+**恢复**：
 ```bash
 node dist/cli.js --yolo --resume
 ```
-
-✅ 预期：启动时显示 session restored 信息
+✅ 显示 session restored。
 
 ```
 What was the secret code I told you earlier?
 ```
+✅ `BANANA-42`
 
-✅ 预期：模型回答 `BANANA-42`
+对比（新会话）：`node dist/cli.js --yolo` → 同问题模型无法回答。
 
-**对比（新会话）**：
-```bash
-node dist/cli.js --yolo
-```
-```
-What was the secret code I told you earlier?
-```
-✅ 预期：模型无法回答
-
-**设计意图**：会话以 JSON 格式存储在 `~/.mini-claude/sessions/`，包含 Anthropic 消息历史。`--resume` 自动找到最近的 session，恢复后继续对话。
-
----
-
-### 15. One-shot 模式
-
-**测试目标**：验证传入 prompt 参数时自动执行并退出。
+### 15. One-shot
 
 ```bash
 node dist/cli.js --yolo "Read the file package.json and tell me the project name. Only output the name."
 ```
-
-✅ 预期：
-- 模型调用 read_file，输出项目名称
-- 程序**自动退出**（返回 shell prompt）
+✅ 输出后**自动退出**。
 
 ```bash
 node dist/cli.js --yolo "List all TypeScript files in the src/ directory"
 ```
 
-✅ 预期：输出 .ts 文件列表，然后自动退出
-
 错误场景：
 ```bash
 node dist/cli.js --yolo "Read the file /nonexistent/path/file.txt"
 ```
-✅ 预期：工具返回错误信息，但程序不 crash，正常退出
+✅ 工具返回错误但程序正常退出。
 
----
-
-### 16. 预算控制（--max-turns）
-
-**测试目标**：验证 agent 循环次数限制。
+### 16. 预算控制
 
 ```bash
 node dist/cli.js --yolo --max-turns 2 "Read these files one by one: package.json, tsconfig.json, src/cli.ts, src/agent.ts, src/tools.ts. Tell me the line count of each."
 ```
-
-✅ 预期：
-- 模型开始读取文件，但在 2 个 agentic turn 后停止
-- 输出包含预算超限提示
-- **不会**读完所有 5 个文件
-
-**设计意图**：预算控制有两个维度——`--max-cost`（USD 上限）和 `--max-turns`（循环次数上限）。每轮 agent 循环（一次 API 调用 + 工具执行）计为一个 turn。超限时模型被告知 budget exceeded 并停止。这防止 Agent 陷入无限循环烧钱。
+✅ 2 个 turn 后停止 + budget 提示，**不会**读完 5 个文件。
 
 ---
 
 ## 清理
 
-测试完成后恢复环境：
-
 ```bash
 bash test/cleanup.sh
 ```
 
----
+## 覆盖矩阵
 
-## 测试覆盖矩阵
-
-| 测试 | 验证功能 | 涉及源码 |
-|------|---------|---------|
-| 1 | MCP 集成 | `mcp.ts` |
+| # | 功能 | 源码 |
+|---|-----|------|
+| 1 | MCP | `mcp.ts` |
 | 2 | WebFetch | `tools.ts` |
-| 3 | 并行工具执行 | `agent.ts` + `tools.ts` |
+| 3 | 并行工具 | `agent.ts` + `tools.ts` |
 | 4 | 语义记忆召回 | `memory.ts` |
 | 5 | @include + Rules | `prompt.ts` |
 | 6 | Read-before-edit | `tools.ts` |
 | 7 | 大结果持久化 | `agent.ts` |
-| 8 | Skill 调用 | `skills.ts` |
-| 9 | ToolSearch 延迟加载 | `tools.ts` |
+| 8 | Skill | `skills.ts` |
+| 9 | ToolSearch | `tools.ts` |
 | 10 | REPL 命令 | `cli.ts` |
 | 11 | Sub-agent | `subagent.ts` + `agent.ts` |
 | 12 | Plan Mode | `agent.ts` + `tools.ts` + `cli.ts` |
 | 13 | 引号规范化 | `tools.ts` |
+| 14 | Session Resume | `session.ts` |
+| 15 | One-shot | `cli.ts` |
+| 16 | 预算控制 | `agent.ts` + `cli.ts` |
 | 17 | Grep Search | `tools.ts` |
 | 18 | Write File | `tools.ts` |
-| 14 | Session Resume | `session.ts` |
-| 15 | One-shot 模式 | `cli.ts` |
-| 16 | 预算控制 | `agent.ts` + `cli.ts` |
-
----
-
-> **下一章**：到此教程结束。回顾整体架构，看看从 ~3400 行到 50 万行的差距在哪里，以及如何继续扩展。
