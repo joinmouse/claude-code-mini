@@ -6,11 +6,9 @@
 >
 > 在线教程仍在[原项目站点](https://windy3f3f3f3f.github.io/claude-code-from-scratch/)。
 >
-> 📖 **姊妹项目**：[How Claude Code Works](https://github.com/Windy3f3f3f3f/how-claude-code-works) — 12 篇专题，33 万字，从源码级别深度解析 Claude Code 架构。
-
 ---
 
-本项目用 **~3800 行 TypeScript** 复现了 Claude Code 的核心架构——Agent Loop、13 个工具（含并行执行 + 流式早期启动）、4 层上下文压缩、语义记忆召回、技能系统、多 Agent、MCP 集成。每一步都对照真实源码讲解"它怎么做的 → 我们怎么简化的"。
+本项目用 **3784 行 TypeScript** 复现了 Claude Code 的核心架构——Agent Loop、13 个工具（含并行执行 + 流式早期启动）、4 层上下文压缩、语义记忆召回、技能系统、多 Agent、MCP 集成。每一步都对照真实源码讲解"它怎么做的 → 我们怎么简化的"。
 
 代码按教程 Phase 划分为三层：
 - **`src/core/`** — Phase 1 基础能力（章节 1-7）：Agent 循环、工具、CLI、压缩、UI
@@ -96,30 +94,30 @@ npm start -- --max-turns 20  # 轮次限制
 
 ## 📁 项目结构
 
-按教程 Phase 划分，代码组织与文档章节严格对应：
+按教程 Phase 划分，代码组织与文档章节严格对应（**共 3784 行**）：
 
 ```
 src/
-├── core/                    # Phase 1 · 构建可用的 Coding Agent（章节 1-7）
-│   ├── agent.ts             # Ch1  Agent 循环：流式、并行执行、预算 (~800行)
-│   ├── tools.ts             # Ch2  13 工具 + mtime 防护 + 延迟加载
-│   ├── prompt.ts            # Ch3  System Prompt：@include + 模板注入
-│   ├── cli.ts               # Ch4  CLI 入口：参数解析、REPL
-│   ├── session.ts           # Ch4  会话持久化
-│   ├── ui.ts                # Ch5  终端输出渲染
-│   ├── compression.ts       # Ch7  4 层压缩管线
-│   └── types.ts             #      共享类型：PermissionMode, ToolDef
+├── core/                    # Phase 1 · 构建可用的 Coding Agent（Ch1-7, 2642 行）
+│   ├── agent.ts             # Ch1  Agent 循环：流式、并行执行、预算    (809 行)
+│   ├── tools.ts             # Ch2  13 工具 + mtime 防护 + 延迟加载     (827 行)
+│   ├── prompt.ts            # Ch3  System Prompt：@include + 模板注入 (232 行)
+│   ├── cli.ts               # Ch4  CLI 入口：参数解析、REPL           (333 行)
+│   ├── session.ts           # Ch4  会话持久化                          (62 行)
+│   ├── ui.ts                # Ch5  终端输出渲染                        (209 行)
+│   ├── compression.ts       # Ch7  4 层压缩管线                        (163 行)
+│   └── types.ts             #      共享类型：PermissionMode, ToolDef  (7 行)
 │
-├── advanced/                # Phase 2 · 进阶能力（章节 8-12）
-│   ├── memory.ts            # Ch8   记忆系统：语义召回 + 异步预取
-│   ├── skills.ts            # Ch9   技能系统：inline/fork 双模式
-│   ├── subagent.ts          # Ch11  子 Agent：发现 + 调度
-│   └── mcp.ts               # Ch12  MCP 客户端：JSON-RPC over stdio
+├── advanced/                # Phase 2 · 进阶能力（Ch8-12, 1036 行）
+│   ├── memory.ts            # Ch8   记忆系统：语义召回 + 异步预取       (396 行)
+│   ├── skills.ts            # Ch9   技能系统：inline/fork 双模式        (175 行)
+│   ├── subagent.ts          # Ch11  子 Agent：发现 + 调度               (199 行)
+│   └── mcp.ts               # Ch12  MCP 客户端：JSON-RPC over stdio    (266 行)
 │
-└── utils/                   # 通用小工具
-    ├── models.ts            # 模型配置：上下文窗口/thinking/output
-    ├── retry.ts             # 指数退避重试
-    └── frontmatter.ts       # YAML frontmatter 解析
+└── utils/                   # 通用小工具 (106 行)
+    ├── models.ts            # 模型配置：上下文窗口/thinking/output      (37 行)
+    ├── retry.ts             # 指数退避重试                              (28 行)
+    └── frontmatter.ts       # YAML frontmatter 解析                     (41 行)
 ```
 
 ## 🔀 与原始版本的区别

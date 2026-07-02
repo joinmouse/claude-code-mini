@@ -1,7 +1,7 @@
 {
   "name": "claude-code-from-scratch",
   "version": "1.0.0",
-  "description": "A minimal coding agent inspired by Claude Code, built from scratch in ~3000 lines",
+  "description": "A minimal coding agent inspired by Claude Code, built from scratch in 3784 lines",
   "type": "module",
   "bin": {
     "mini-claude": "./dist/core/cli.js"
