@@ -183,55 +183,38 @@ async function runRepl(agent: Agent) {
         process.exit(0);
       }
 
-      // REPL commands
-      if (input === "/clear") {
-        agent.clearHistory();
-        askQuestion();
-        return;
-      }
-      if (input === "/plan") {
-        const newMode = agent.togglePlanMode();
-        askQuestion();
-        return;
-      }
-      if (input === "/cost") {
-        agent.showCost();
-        askQuestion();
-        return;
-      }
-      if (input === "/compact") {
-        try {
-          await agent.compact();
-        } catch (e: any) {
-          printError(e.message);
-        }
-        askQuestion();
-        return;
-      }
-      if (input === "/memory") {
-        const memories = listMemories();
-        if (memories.length === 0) {
-          printInfo("No memories saved yet.");
-        } else {
-          printInfo(`${memories.length} memories:`);
-          for (const m of memories) {
-            console.log(`    [${m.type}] ${m.name} — ${m.description}`);
+      // REPL commands table — uniform dispatch
+      const commands: Record<string, () => Promise<void> | void> = {
+        "/clear": () => agent.clearHistory(),
+        "/plan": () => { agent.togglePlanMode(); },
+        "/cost": () => agent.showCost(),
+        "/compact": async () => {
+          try { await agent.compact(); } catch (e: any) { printError(e.message); }
+        },
+        "/memory": () => {
+          const memories = listMemories();
+          if (memories.length === 0) {
+            printInfo("No memories saved yet.");
+          } else {
+            printInfo(`${memories.length} memories:`);
+            for (const m of memories) console.log(`    [${m.type}] ${m.name} — ${m.description}`);
           }
-        }
-        askQuestion();
-        return;
-      }
-      if (input === "/skills") {
-        const skills = discoverSkills();
-        if (skills.length === 0) {
-          printInfo("No skills found. Add skills to .claude/skills/<name>/SKILL.md");
-        } else {
-          printInfo(`${skills.length} skills:`);
-          for (const s of skills) {
-            const tag = s.userInvocable ? `/${s.name}` : s.name;
-            console.log(`    ${tag} (${s.source}) — ${s.description}`);
+        },
+        "/skills": () => {
+          const skills = discoverSkills();
+          if (skills.length === 0) {
+            printInfo("No skills found. Add skills to .claude/skills/<name>/SKILL.md");
+          } else {
+            printInfo(`${skills.length} skills:`);
+            for (const s of skills) {
+              const tag = s.userInvocable ? `/${s.name}` : s.name;
+              console.log(`    ${tag} (${s.source}) — ${s.description}`);
+            }
           }
-        }
+        },
+      };
+      if (commands[input]) {
+        await commands[input]();
         askQuestion();
         return;
       }

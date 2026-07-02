@@ -128,12 +128,8 @@ export class Agent {
 
     // Build system prompt (with plan mode injection if needed)
     this.baseSystemPrompt = options.customSystemPrompt || buildSystemPrompt();
-    if (this.permissionMode === "plan") {
-      this.planFilePath = this.generatePlanFilePath();
-      this.systemPrompt = this.baseSystemPrompt + this.buildPlanModePrompt();
-    } else {
-      this.systemPrompt = this.baseSystemPrompt;
-    }
+    this.systemPrompt = this.baseSystemPrompt;
+    if (this.permissionMode === "plan") this.applyPlanMode();
 
     this.anthropicClient = new Anthropic({
       apiKey: options.apiKey,
@@ -153,10 +149,22 @@ export class Agent {
   }
 
   private resolveThinkingMode(thinking: boolean): "adaptive" | "enabled" | "disabled" {
-    if (!thinking) return "disabled";
-    if (!modelSupportsThinking(this.model)) return "disabled";
-    if (modelSupportsAdaptiveThinking(this.model)) return "adaptive";
-    return "enabled";
+    if (!thinking || !modelSupportsThinking(this.model)) return "disabled";
+    return modelSupportsAdaptiveThinking(this.model) ? "adaptive" : "enabled";
+  }
+
+  /** Enter plan mode: create plan file + inject plan-mode system prompt. */
+  private applyPlanMode() {
+    this.planFilePath = this.generatePlanFilePath();
+    this.systemPrompt = this.baseSystemPrompt + this.buildPlanModePrompt();
+  }
+
+  /** Exit plan mode: restore permission mode + system prompt, clear plan state. */
+  private restoreFromPlanMode(target: PermissionMode) {
+    this.permissionMode = target;
+    this.prePlanMode = null;
+    this.planFilePath = null;
+    this.systemPrompt = this.baseSystemPrompt;
   }
 
   /** Build a sideQuery function for memory recall. */
@@ -193,25 +201,19 @@ export class Agent {
     this.planApprovalFn = fn;
   }
 
-  /** Toggle plan mode from the REPL. Returns the new mode description. */
+  /** Toggle plan mode from the REPL. Returns the new mode. */
   togglePlanMode(): string {
     if (this.permissionMode === "plan") {
-      // Exit plan mode
-      this.permissionMode = this.prePlanMode || "default";
-      this.prePlanMode = null;
-      this.planFilePath = null;
-      this.systemPrompt = this.baseSystemPrompt;
-      printInfo(`Exited plan mode → ${this.permissionMode} mode`);
-      return this.permissionMode;
-    } else {
-      // Enter plan mode
-      this.prePlanMode = this.permissionMode;
-      this.permissionMode = "plan";
-      this.planFilePath = this.generatePlanFilePath();
-      this.systemPrompt = this.baseSystemPrompt + this.buildPlanModePrompt();
-      printInfo(`Entered plan mode. Plan file: ${this.planFilePath}`);
-      return "plan";
+      const target = this.prePlanMode || "default";
+      this.restoreFromPlanMode(target);
+      printInfo(`Exited plan mode → ${target} mode`);
+      return target;
     }
+    this.prePlanMode = this.permissionMode;
+    this.permissionMode = "plan";
+    this.applyPlanMode();
+    printInfo(`Entered plan mode. Plan file: ${this.planFilePath}`);
+    return "plan";
   }
 
   getPermissionMode(): string {
@@ -327,10 +329,6 @@ export class Agent {
     printInfo(`Session restored (${this.anthropicMessages.length} messages).`);
   }
 
-  private getMessageCount(): number {
-    return this.anthropicMessages.length;
-  }
-
   private autoSave() {
     try {
       saveSession(this.sessionId, {
@@ -430,13 +428,10 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
 
   private async executePlanModeTool(name: string): Promise<string> {
     if (name === "enter_plan_mode") {
-      if (this.permissionMode === "plan") {
-        return "Already in plan mode.";
-      }
+      if (this.permissionMode === "plan") return "Already in plan mode.";
       this.prePlanMode = this.permissionMode;
       this.permissionMode = "plan";
-      this.planFilePath = this.generatePlanFilePath();
-      this.systemPrompt = this.baseSystemPrompt + this.buildPlanModePrompt();
+      this.applyPlanMode();
       printInfo("Entered plan mode (read-only). Plan file: " + this.planFilePath);
       return `Entered plan mode. You are now in read-only mode.\n\nYour plan file: ${this.planFilePath}\nWrite your plan to this file. This is the only file you can edit.\n\nWhen your plan is complete, call exit_plan_mode.`;
     }
@@ -461,23 +456,12 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
           return `User rejected the plan and wants to keep planning.\n\nUser feedback: ${feedback}\n\nPlease revise your plan based on this feedback. When done, call exit_plan_mode again.`;
         }
 
-        // User approved — determine the target mode
-        let targetMode: PermissionMode;
-        if (result.choice === "clear-and-execute") {
-          targetMode = "acceptEdits";
-        } else if (result.choice === "execute") {
-          targetMode = "acceptEdits";
-        } else {
-          // manual-execute
-          targetMode = this.prePlanMode || "default";
-        }
-
-        // Exit plan mode
-        this.permissionMode = targetMode;
-        this.prePlanMode = null;
+        // User approved — determine the target mode & exit plan
+        const targetMode: PermissionMode = result.choice === "manual-execute"
+          ? (this.prePlanMode || "default")
+          : "acceptEdits";
         const savedPlanPath = this.planFilePath;
-        this.planFilePath = null;
-        this.systemPrompt = this.baseSystemPrompt;
+        this.restoreFromPlanMode(targetMode);
         if (result.choice === "clear-and-execute") {
           this.clearHistoryKeepSystem();
           this.contextCleared = true; // Signal the agent loop to inject plan as user message
@@ -490,12 +474,10 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
       }
 
       // Fallback: no approval function, just exit directly (e.g. sub-agents)
-      this.permissionMode = this.prePlanMode || "default";
-      this.prePlanMode = null;
-      this.planFilePath = null;
-      this.systemPrompt = this.baseSystemPrompt;
-      printInfo("Exited plan mode. Restored to " + this.permissionMode + " mode.");
-      return `Exited plan mode. Permission mode restored to: ${this.permissionMode}\n\n## Your Plan:\n${planContent}`;
+      const target = this.prePlanMode || "default";
+      this.restoreFromPlanMode(target);
+      printInfo("Exited plan mode. Restored to " + target + " mode.");
+      return `Exited plan mode. Permission mode restored to: ${target}\n\n## Your Plan:\n${planContent}`;
     }
 
     return `Unknown plan mode tool: ${name}`;
@@ -535,6 +517,32 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
     return this.runForkAgent(type, input.description || "sub-agent task", config.systemPrompt, config.tools, input.prompt || "");
   }
 
+  /**
+   * Merge prefetched memories into conversation. Appends to last user message
+   * (or adds new one) to keep the API's user/assistant alternation rule intact.
+   */
+  private async injectPrefetchedMemories(prefetch: MemoryPrefetch): Promise<void> {
+    try {
+      const memories = await prefetch.promise;
+      if (memories.length === 0) return;
+      const injectionText = formatMemoriesForInjection(memories);
+      const last = this.anthropicMessages[this.anthropicMessages.length - 1];
+      if (last && last.role === "user") {
+        if (typeof last.content === "string") {
+          last.content = last.content + "\n\n" + injectionText;
+        } else if (Array.isArray(last.content)) {
+          (last.content as any[]).push({ type: "text", text: injectionText });
+        }
+      } else {
+        this.anthropicMessages.push({ role: "user", content: injectionText });
+      }
+      for (const m of memories) {
+        this.alreadySurfacedMemories.add(m.path);
+        this.sessionMemoryBytes += Buffer.byteLength(m.content);
+      }
+    } catch { /* prefetch errors already logged */ }
+  }
+
   // ─── Anthropic backend ───────────────────────────────────────
 
   private async chatAnthropic(userMessage: string): Promise<void> {
@@ -563,31 +571,9 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
 
       // Consume memory prefetch if settled (non-blocking poll, zero-wait).
       // Checked every iteration so the model sees recalled memories ASAP.
-      // Memories are appended to the last user message (or added as a new one)
-      // to avoid consecutive user messages which violate the API's alternation rule.
       if (memoryPrefetch && memoryPrefetch.settled && !memoryPrefetch.consumed) {
         memoryPrefetch.consumed = true;
-        try {
-          const memories = await memoryPrefetch.promise;
-          if (memories.length > 0) {
-            const injectionText = formatMemoriesForInjection(memories);
-            const last = this.anthropicMessages[this.anthropicMessages.length - 1];
-            if (last && last.role === "user") {
-              // Append to existing user message to maintain alternation
-              if (typeof last.content === "string") {
-                last.content = last.content + "\n\n" + injectionText;
-              } else if (Array.isArray(last.content)) {
-                (last.content as any[]).push({ type: "text", text: injectionText });
-              }
-            } else {
-              this.anthropicMessages.push({ role: "user", content: injectionText });
-            }
-            for (const m of memories) {
-              this.alreadySurfacedMemories.add(m.path);
-              this.sessionMemoryBytes += Buffer.byteLength(m.content);
-            }
-          }
-        } catch { /* prefetch errors already logged */ }
+        await this.injectPrefetchedMemories(memoryPrefetch);
       }
 
       if (!this.isSubAgent) startSpinner();
