@@ -5,7 +5,6 @@ import {
   printAssistantText,
   printToolCall,
   printToolResult,
-  printError,
   printConfirmation,
   printDivider,
   printCost,
@@ -156,8 +155,8 @@ export class Agent {
   // Abort support
   private abortController: AbortController | null = null;
 
-  // Permission whitelist: paths confirmed in this session
-  private confirmedPaths: Set<string> = new Set();
+  // Confirmed-this-session cache: avoids re-prompting for same action
+  private confirmedActions: Set<string> = new Set();
 
   // Plan mode state
   private prePlanMode: PermissionMode | null = null;
@@ -497,6 +496,9 @@ export class Agent {
     const utilization = this.lastInputTokenCount / this.effectiveWindow;
     if (utilization < SNIP_THRESHOLD) return;
 
+    // Pre-build tool_use lookup to avoid O(n²) findToolUseById per result
+    const toolUseMap = this.buildToolUseLookup();
+
     // Collect all tool_result blocks with metadata
     const results: { msgIdx: number; blockIdx: number; toolName: string; filePath?: string }[] = [];
     for (let mi = 0; mi < this.anthropicMessages.length; mi++) {
@@ -505,9 +507,7 @@ export class Agent {
       for (let bi = 0; bi < msg.content.length; bi++) {
         const block = msg.content[bi] as any;
         if (block.type === "tool_result" && typeof block.content === "string" && block.content !== SNIP_PLACEHOLDER) {
-          // Find the corresponding tool_use to get tool name and input
-          const toolUseId = block.tool_use_id;
-          const toolInfo = this.findToolUseById(toolUseId);
+          const toolInfo = toolUseMap.get(block.tool_use_id);
           if (toolInfo && SNIPPABLE_TOOLS.has(toolInfo.name)) {
             results.push({ msgIdx: mi, blockIdx: bi, toolName: toolInfo.name, filePath: toolInfo.input?.file_path });
           }
@@ -577,17 +577,18 @@ export class Agent {
 
 
 
-  // Helper: find a tool_use block by its ID in assistant messages
-  private findToolUseById(toolUseId: string): { name: string; input: any } | null {
+  /** Build a tool_use_id → { name, input } lookup map in one pass. */
+  private buildToolUseLookup(): Map<string, { name: string; input: any }> {
+    const map = new Map<string, { name: string; input: any }>();
     for (const msg of this.anthropicMessages) {
       if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
       for (const block of msg.content as any[]) {
-        if (block.type === "tool_use" && block.id === toolUseId) {
-          return { name: block.name, input: block.input };
+        if (block.type === "tool_use" && block.id) {
+          map.set(block.id, { name: block.name, input: block.input });
         }
       }
     }
-    return null;
+    return map;
   }
 
   // ─── Execute tool (handles agent tool internally) ─────────
@@ -935,13 +936,13 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
           toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: `Action denied: ${perm.message}` });
           continue;
         }
-        if (perm.action === "confirm" && perm.message && !this.confirmedPaths.has(perm.message)) {
+        if (perm.action === "confirm" && perm.message && !this.confirmedActions.has(perm.message)) {
           const confirmed = await this.confirmDangerous(perm.message);
           if (!confirmed) {
             toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: "User denied this action." });
             continue;
           }
-          this.confirmedPaths.add(perm.message);
+          this.confirmedActions.add(perm.message);
         }
 
         const raw = await this.executeToolCall(toolUse.name, input);
@@ -983,9 +984,7 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
         messages: this.anthropicMessages,
       };
 
-      if (this.thinkingMode === "adaptive") {
-        createParams.thinking = { type: "enabled", budget_tokens: maxOutput - 1 };
-      } else if (this.thinkingMode === "enabled") {
+      if (this.thinkingMode !== "disabled") {
         createParams.thinking = { type: "enabled", budget_tokens: maxOutput - 1 };
       }
 

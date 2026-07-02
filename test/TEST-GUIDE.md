@@ -17,16 +17,12 @@ npm run build # 如果使用ts版则需构建，python版不用
 确保 `.env` 已配置好 API Key：
 ```
 ANTHROPIC_API_KEY=sk-xxx
-ANTHROPIC_BASE_URL=https://aihubmix.com   # 可选
+export ANTHROPIC_BASE_URL=https://aihubmix.com   # 可选
 ```
-
-> **提示**：如果系统环境里同时有 `OPENAI_API_KEY` + `OPENAI_BASE_URL` 和 `ANTHROPIC_API_KEY`，
-> 会优先走 OpenAI 兼容路径。两种路径都支持全部功能（包括语义记忆召回）。
 
 ---
 
 ## 启动方式
-
 **TS 版（二选一）**：
 ```bash
 # 交互式 REPL（推荐，能测 skill 和 REPL 命令）
