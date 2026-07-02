@@ -26,10 +26,10 @@ export ANTHROPIC_BASE_URL=https://aihubmix.com   # 可选
 **TS 版（二选一）**：
 ```bash
 # 交互式 REPL（推荐，能测 skill 和 REPL 命令）
-node dist/cli.js --yolo
+node dist/core/cli.js --yolo
 
 # one-shot 模式
-node dist/cli.js --yolo "你的提示词"
+node dist/core/cli.js --yolo "你的提示词"
 ```
 
 **Python 版**：
@@ -80,7 +80,7 @@ Fetch https://example.com and tell me what the page is about.
 ### 3. 并行工具执行
 
 ```
-Read the files src/frontmatter.ts, src/session.ts, and src/skills.ts at the same time, then tell me each file's line count.
+Read the files src/utils/frontmatter.ts, src/core/session.ts, and src/advanced/skills.ts at the same time, then tell me each file's line count.
 ```
 
 ✅ 预期：三个 `read_file` 调用同时出现（不是一个一个来的）
@@ -339,7 +339,7 @@ Edit test/quote-test.js, replace "Hi Universe" with "Hello World"
 
 **第一次会话**：
 ```bash
-node dist/cli.js --yolo
+node dist/core/cli.js --yolo
 ```
 ```
 Remember this: The secret code is BANANA-42. Read package.json and tell me the version.
@@ -348,7 +348,7 @@ Remember this: The secret code is BANANA-42. Read package.json and tell me the v
 
 **第二次会话（恢复）**：
 ```bash
-node dist/cli.js --yolo --resume
+node dist/core/cli.js --yolo --resume
 ```
 
 ✅ 预期：启动时显示 session restored 信息
@@ -361,7 +361,7 @@ What was the secret code I told you earlier?
 
 **对比（不 resume 的新会话）**：
 ```bash
-node dist/cli.js --yolo
+node dist/core/cli.js --yolo
 ```
 ```
 What was the secret code I told you earlier?
@@ -375,7 +375,7 @@ What was the secret code I told you earlier?
 直接传入 prompt 参数，执行完毕后自动退出（不进入 REPL）。
 
 ```bash
-node dist/cli.js --yolo "Read the file package.json and tell me the project name. Only output the name."
+node dist/core/cli.js --yolo "Read the file package.json and tell me the project name. Only output the name."
 ```
 
 ✅ 预期：
@@ -383,14 +383,14 @@ node dist/cli.js --yolo "Read the file package.json and tell me the project name
 - 程序执行完毕后**自动退出**（返回 shell prompt），不进入交互模式
 
 ```bash
-node dist/cli.js --yolo "List all TypeScript files in the src/ directory"
+node dist/core/cli.js --yolo "List all TypeScript files in the src/ directory"
 ```
 
 ✅ 预期：调用 list_files，输出 .ts 文件列表，然后自动退出
 
 测试错误场景：
 ```bash
-node dist/cli.js --yolo "Read the file /nonexistent/path/file.txt"
+node dist/core/cli.js --yolo "Read the file /nonexistent/path/file.txt"
 ```
 ✅ 预期：即使工具返回错误，程序仍正常退出（不 crash）
 
@@ -401,7 +401,7 @@ node dist/cli.js --yolo "Read the file /nonexistent/path/file.txt"
 测试 `--max-turns` 限制 agent 循环次数。
 
 ```bash
-node dist/cli.js --yolo --max-turns 2 "Read these files one by one: package.json, tsconfig.json, src/cli.ts, src/agent.ts, src/tools.ts. Tell me the line count of each."
+node dist/core/cli.js --yolo --max-turns 2 "Read these files one by one: package.json, tsconfig.json, src/core/cli.ts, src/core/agent.ts, src/core/tools.ts. Tell me the line count of each."
 ```
 
 ✅ 预期：
@@ -420,7 +420,7 @@ node dist/cli.js --yolo --max-turns 2 "Read these files one by one: package.json
 Use grep_search to find all lines containing "import.*chalk" in the src/ directory
 ```
 
-✅ 预期：返回 `src/agent.ts` 和/或 `src/ui.ts` 中的匹配行，格式为 `文件路径:行号:匹配内容`
+✅ 预期：返回 `src/core/agent.ts` 和/或 `src/core/ui.ts` 中的匹配行，格式为 `文件路径:行号:匹配内容`
 
 ```
 Use grep_search to find the pattern "export function" in all .ts files under src/
@@ -432,7 +432,7 @@ Use grep_search to find the pattern "export function" in all .ts files under src
 Use grep_search to find "DANGEROUS_PATTERNS" in the project
 ```
 
-✅ 预期：返回 `src/tools.ts` 中的定义位置
+✅ 预期：返回 `src/core/tools.ts` 中的定义位置
 
 ---
 
@@ -481,7 +481,7 @@ What agent types are available? List them all.
 
 使用自定义 agent：
 ```
-Use the agent tool with type "reviewer" to review the file src/frontmatter.ts
+Use the agent tool with type "reviewer" to review the file src/utils/frontmatter.ts
 ```
 
 ✅ 预期：

@@ -9,7 +9,7 @@ export { type PermissionMode, type ToolDef } from "./types.js";
 import type { PermissionMode, ToolDef } from "./types.js";
 
 const isWin = process.platform === "win32";
-import { getMemoryDir, updateMemoryIndex } from "./memory.js";
+import { getMemoryDir, updateMemoryIndex } from "../advanced/memory.js";
 // Note: skill execution is handled in agent.ts (supports fork mode)
 
 // ─── Permission modes ──────────────────────────────────────

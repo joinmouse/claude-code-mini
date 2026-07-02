@@ -12,7 +12,10 @@
 
 本项目用 **~3800 行 TypeScript** 复现了 Claude Code 的核心架构——Agent Loop、13 个工具（含并行执行 + 流式早期启动）、4 层上下文压缩、语义记忆召回、技能系统、多 Agent、MCP 集成。每一步都对照真实源码讲解"它怎么做的 → 我们怎么简化的"。
 
-核心代码仅 **~800 行**（[agent.ts](src/agent.ts)），其余按模块拆分：[压缩管线](src/compression.ts)、[工具系统](src/tools.ts)、[记忆](src/memory.ts)、[MCP](src/mcp.ts)、[子Agent](src/subagent.ts)、[技能](src/skills.ts)、[CLI](src/cli.ts)、[提示词](src/prompt.ts)。
+代码按教程 Phase 划分为三层：
+- **`src/core/`** — Phase 1 基础能力（章节 1-7）：Agent 循环、工具、CLI、压缩、UI
+- **`src/advanced/`** — Phase 2 进阶能力（章节 8-12）：记忆、技能、子 Agent、MCP
+- **`src/utils/`** — 通用小工具：模型配置、重试、frontmatter
 
 ## 📖 分步教程
 
@@ -93,23 +96,30 @@ npm start -- --max-turns 20  # 轮次限制
 
 ## 📁 项目结构
 
+按教程 Phase 划分，代码组织与文档章节严格对应：
+
 ```
 src/
-├── agent.ts        # Agent 循环：流式、并行执行、预算 (~800行)
-├── compression.ts  # 4层压缩管线：budget/snip/microcompact/auto-compact
-├── tools.ts        # 13 工具 + mtime 防护 + 延迟加载
-├── cli.ts          # CLI 入口：参数解析、REPL
-├── memory.ts       # 记忆系统：语义召回 + 异步预取
-├── mcp.ts          # MCP 客户端：JSON-RPC over stdio
-├── prompt.ts       # System Prompt：@include + 模板注入
-├── ui.ts           # 终端输出渲染
-├── subagent.ts     # 子 Agent：发现 + 调度
-├── skills.ts       # 技能系统：inline/fork 双模式
-├── session.ts      # 会话持久化
-├── frontmatter.ts  # YAML frontmatter 解析
-├── models.ts       # 模型配置：上下文窗口/thinking/output
-├── retry.ts        # 指数退避重试
-└── types.ts        # 共享类型：PermissionMode, ToolDef
+├── core/                    # Phase 1 · 构建可用的 Coding Agent（章节 1-7）
+│   ├── agent.ts             # Ch1  Agent 循环：流式、并行执行、预算 (~800行)
+│   ├── tools.ts             # Ch2  13 工具 + mtime 防护 + 延迟加载
+│   ├── prompt.ts            # Ch3  System Prompt：@include + 模板注入
+│   ├── cli.ts               # Ch4  CLI 入口：参数解析、REPL
+│   ├── session.ts           # Ch4  会话持久化
+│   ├── ui.ts                # Ch5  终端输出渲染
+│   ├── compression.ts       # Ch7  4 层压缩管线
+│   └── types.ts             #      共享类型：PermissionMode, ToolDef
+│
+├── advanced/                # Phase 2 · 进阶能力（章节 8-12）
+│   ├── memory.ts            # Ch8   记忆系统：语义召回 + 异步预取
+│   ├── skills.ts            # Ch9   技能系统：inline/fork 双模式
+│   ├── subagent.ts          # Ch11  子 Agent：发现 + 调度
+│   └── mcp.ts               # Ch12  MCP 客户端：JSON-RPC over stdio
+│
+└── utils/                   # 通用小工具
+    ├── models.ts            # 模型配置：上下文窗口/thinking/output
+    ├── retry.ts             # 指数退避重试
+    └── frontmatter.ts       # YAML frontmatter 解析
 ```
 
 ## 🔀 与原始版本的区别

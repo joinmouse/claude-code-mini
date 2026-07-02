@@ -12,16 +12,16 @@ import {
 } from "./ui.js";
 import { saveSession } from "./session.js";
 import { buildSystemPrompt } from "./prompt.js";
-import { getSubAgentConfig, type SubAgentType } from "./subagent.js";
+import { getSubAgentConfig, type SubAgentType } from "../advanced/subagent.js";
 import {
   startMemoryPrefetch, formatMemoriesForInjection,
   type MemoryPrefetch, type RelevantMemory, type SideQueryFn,
-} from "./memory.js";
-import { McpManager } from "./mcp.js";
-import { withRetry } from "./retry.js";
+} from "../advanced/memory.js";
+import { McpManager } from "../advanced/mcp.js";
+import { withRetry } from "../utils/retry.js";
 import {
   getContextWindow, modelSupportsThinking, modelSupportsAdaptiveThinking, getMaxOutputTokens,
-} from "./models.js";
+} from "../utils/models.js";
 import { Compressor } from "./compression.js";
 import * as readline from "readline";
 import { randomUUID } from "crypto";
@@ -383,7 +383,7 @@ export class Agent {
   // ─── Skill fork mode ─────────────────────────────────────
 
   private async executeSkillTool(input: Record<string, any>): Promise<string> {
-    const { executeSkill } = await import("./skills.js");
+    const { executeSkill } = await import("../advanced/skills.js");
     const result = executeSkill(input.skill_name, input.args || "");
     if (!result) return `Unknown skill: ${input.skill_name}`;
 

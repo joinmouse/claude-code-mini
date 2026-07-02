@@ -4,8 +4,8 @@ import * as readline from "readline";
 import { Agent } from "./agent.js";
 import { printWelcome, printUserPrompt, printError, printInfo, printPlanForApproval, printPlanApprovalOptions } from "./ui.js";
 import { loadSession, getLatestSessionId } from "./session.js";
-import { listMemories } from "./memory.js";
-import { discoverSkills, resolveSkillPrompt, getSkillByName, executeSkill } from "./skills.js";
+import { listMemories } from "../advanced/memory.js";
+import { discoverSkills, resolveSkillPrompt, getSkillByName, executeSkill } from "../advanced/skills.js";
 import type { PermissionMode } from "./types.js";
 
 interface ParsedArgs {

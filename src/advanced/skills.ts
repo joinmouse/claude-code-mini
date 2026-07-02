@@ -4,7 +4,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
-import { parseFrontmatter } from "./frontmatter.js";
+import { parseFrontmatter } from "../utils/frontmatter.js";
 
 // ─── Types ──────────────────────────────────────────────────
 

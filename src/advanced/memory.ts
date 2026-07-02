@@ -8,7 +8,7 @@ import {
 import { join } from "path";
 import { homedir } from "os";
 import { createHash } from "crypto";
-import { parseFrontmatter, formatFrontmatter } from "./frontmatter.js";
+import { parseFrontmatter, formatFrontmatter } from "../utils/frontmatter.js";
 
 /** A function that sends a prompt and returns the model's text response. */
 export type SideQueryFn = (system: string, userMessage: string, signal?: AbortSignal) => Promise<string>;

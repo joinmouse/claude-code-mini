@@ -2,9 +2,9 @@ import { readFileSync, existsSync, readdirSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { execSync } from "child_process";
 import * as os from "os";
-import { buildMemoryPromptSection } from "./memory.js";
-import { buildSkillDescriptions } from "./skills.js";
-import { buildAgentDescriptions } from "./subagent.js";
+import { buildMemoryPromptSection } from "../advanced/memory.js";
+import { buildSkillDescriptions } from "../advanced/skills.js";
+import { buildAgentDescriptions } from "../advanced/subagent.js";
 import { getDeferredToolNames } from "./tools.js";
 
 // ─── @include resolution ─────────────────────────────────────
